@@ -13,6 +13,7 @@ Requires Unreal Engine 4.26 (the game's engine version). Standard library only.
 import argparse
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -36,9 +37,9 @@ def load_config():
     return json.load(open(os.path.join(HERE, 'slots.json')))
 
 
-def find_maps(slot):
-    """Return {albedo|normal|orm: file} found in textures/<slot>/."""
-    folder = os.path.join(TEXTURES, slot)
+def find_maps(slot, folder=None):
+    """Return {albedo|normal|orm: file} found in textures/<slot>/ (or `folder`)."""
+    folder = folder or os.path.join(TEXTURES, slot)
     found = {}
     if os.path.isdir(folder):
         for f in sorted(os.listdir(folder)):
@@ -61,15 +62,16 @@ def albedo_mean(path):
     return max(sum(lums) / len(lums), 0.01)
 
 
-def slot_settings(cfg, name):
+def slot_settings(cfg, name, folder=None):
+    folder = folder or os.path.join(TEXTURES, name)
     s = dict(cfg['defaults'])
     s.update({k: cfg['slots'][name][k] for k in ('color', 'roughness', 'metallic')})
-    maps = find_maps(name)
+    maps = find_maps(name, folder)
     s['tint_mean'] = albedo_mean(maps['albedo']) if 'albedo' in maps else 0.5
     if 'orm' in maps:
         # The ORM texture supplies roughness/metallic; parameters become multipliers.
         s.update(roughness=1.0, metallic=1.0)
-    user = os.path.join(TEXTURES, name, 'settings.json')
+    user = os.path.join(folder, 'settings.json')
     if os.path.exists(user):
         extra = json.load(open(user))
         unknown = set(extra) - set(SETTINGS_KEYS)
@@ -77,6 +79,46 @@ def slot_settings(cfg, name):
             sys.exit('%s: unknown settings %s (allowed: %s)' % (user, sorted(unknown), ', '.join(SETTINGS_KEYS)))
         s.update(extra)
     return s, maps
+
+
+# ---------------------------------------------------------------- per-map overrides
+# textures/_maps/<Map>/<Slot>/ holds a texture set used only by that map. The build gives the map its own copy of
+# the slot's material at a path of exactly the same length, and patches the map's name table to point at it.
+
+MAP_DIR = '_maps'
+
+
+def map_folder(map_name, slot):
+    return os.path.join(TEXTURES, MAP_DIR, map_name, slot)
+
+
+def map_overrides(cfg):
+    """{map: [slot, ...]} for every per-map folder that has textures."""
+    root = os.path.join(TEXTURES, MAP_DIR)
+    found = {}
+    if os.path.isdir(root):
+        for m in sorted(os.listdir(root)):
+            slots = [s for s in cfg['slots'] if find_maps(s, map_folder(m, s))]
+            if slots:
+                found[m] = slots
+    return found
+
+
+def map_asset(map_name, asset):
+    """Same-length package path for a map's own copy of `asset`, e.g. /Game/SOM/CTF_Arches/xxxx/MI_Name."""
+    folder, name = asset.rsplit('/', 1)
+    prefix = '/Game/SOM/%s/' % map_name
+    pad = len(folder) - len(prefix)
+    if pad < 1 or not re.fullmatch(r'\w+', map_name):
+        raise ValueError('Map name %r is too long or invalid for a per-map override of %s' % (map_name, asset))
+    return prefix + 'x' * pad + '/' + name
+
+
+def map_package(paks, map_name):
+    hits = [k for p in paks for k in p.files if k.endswith('/' + map_name + '.umap') and '/Content/Levels/' in k]
+    if not hits:
+        raise KeyError('No map called %s in the game files' % map_name)
+    return hits[0]
 
 
 # ---------------------------------------------------------------- game / engine discovery
@@ -160,22 +202,30 @@ def make_project():
     return defaults
 
 
-def make_job(cfg, enabled, defaults):
+def make_job(cfg, enabled, defaults, overrides):
     tex_root = '/Game/SalvageOps/Textures'
     textures = [{'src': os.path.join(defaults, k + '.png'), 'dest': '%s/Default/T_Default_%s' % (tex_root, k), 'kind': k}
                 for k in MAPS]
     materials, instances = [], []
-    for name in enabled:
-        s, maps = slot_settings(cfg, name)
+
+    def add(slot_name, asset, folder, tex_folder, tex_prefix):
+        s, maps = slot_settings(cfg, slot_name, folder)
         for k in MAPS:
             if k in maps:
-                dest = '%s/%s/T_%s_%s' % (tex_root, name, name, k)
+                dest = '%s/%s/%s_%s' % (tex_root, tex_folder, tex_prefix, k)
                 textures.append({'src': maps[k], 'dest': dest, 'kind': k})
                 s[k] = dest
             else:
                 s[k] = '%s/Default/T_Default_%s' % (tex_root, k)
-        slot = cfg['slots'][name]
-        (materials if slot['kind'] == 'material' else instances).append({'asset': slot['asset'], 'params': s})
+        kind = cfg['slots'][slot_name]['kind']
+        (materials if kind == 'material' else instances).append({'asset': asset, 'params': s})
+
+    for name in enabled:
+        add(name, cfg['slots'][name]['asset'], None, name, 'T_' + name)
+    for map_name, slots in overrides.items():
+        for name in slots:
+            add(name, map_asset(map_name, cfg['slots'][name]['asset']), map_folder(map_name, name),
+                'Maps/%s/%s' % (map_name, name), 'T_%s_%s' % (map_name, name))
     passthroughs = [p for p in cfg['passthroughs']
                     if p['when_slot'] in enabled and p.get('unless_slot') not in enabled]
     stubs = {path: s for path, s in cfg['stubs'].items()
@@ -217,15 +267,21 @@ def build(args):
     if shared and not args.allow_shared:
         print('Skipping %s: these also change the shipped maps (pass --allow-shared to include).' % ', '.join(shared))
     enabled = [n for n in textured if n not in shared or args.allow_shared]
-    if not enabled:
+    overrides = map_overrides(cfg)
+    if not enabled and not overrides:
         sys.exit('No slots to build. Put albedo.png (and optionally normal.png / orm.png) in textures/<Slot>/ '
                  '- run "python build.py list".')
-    print('Building slots: ' + ', '.join(enabled))
+    if enabled:
+        print('Building slots: ' + ', '.join(enabled))
+    for m, slots in overrides.items():
+        print('Per-map overrides for %s: %s' % (m, ', '.join(slots)))
     editor, unrealpak = engine_tools(args.ue)
+    patched = patch_maps(cfg, overrides, args.game or find_game()) if overrides else []
+    snap = snapshot(cfg)
 
     print('[1/4] Preparing mod project')
     defaults = make_project()
-    job = make_job(cfg, enabled, defaults)
+    job = make_job(cfg, enabled, defaults, overrides)
     job_file = os.path.join(BUILD, 'job.json')
     json.dump(job, open(job_file, 'w'), indent=1)
     if os.path.exists(job['result_file']):
@@ -256,12 +312,58 @@ def build(args):
             for src in cooked_files(asset):
                 rel = os.path.relpath(src, os.path.join(PROJECT, 'Saved', 'Cooked', 'WindowsNoEditor')).replace(os.sep, '/')
                 f.write('"%s" "../../../%s"\n' % (src, rel))
+        for src, rel in patched:
+            f.write('"%s" "../../../%s"\n' % (src, rel))
     os.makedirs(OUT, exist_ok=True)
     pak = os.path.join(OUT, PAK_NAME)
     run([unrealpak, pak, '-create=' + resp], os.path.join(logs, 'pak.log'))
-    print('Built %s (%d assets)' % (pak, len(assets)))
+    print('Built %s (%d assets, %d patched maps)' % (pak, len(assets), len(patched)))
+    default_textures = os.path.normcase(TEXTURES) == os.path.normcase(os.path.join(HERE, 'textures'))
+    json.dump({'snapshot': snap if default_textures else None, 'allow_shared': args.allow_shared},
+              open(BUILT_STATE, 'w'))
     if args.install:
         install(args)
+
+
+def patch_maps(cfg, overrides, game):
+    """Write each overridden map's header with its material references redirected; returns [(file, pak path)]."""
+    import pakfile
+    if not game:
+        sys.exit('Per-map overrides need the game files. Pass --game with the Lemnis Gate folder.')
+    paks = pakfile.game_paks(game)
+    out = []
+    for map_name, slots in overrides.items():
+        rel = map_package(paks, map_name)
+        original = pakfile.find(paks, rel)
+        names = {n for _, n, _ in pakfile.name_table(original)}
+        unused = [s for s in slots if cfg['slots'][s]['asset'] not in names]
+        if unused:
+            sys.exit('%s does not use %s, so it cannot be overridden there.' % (map_name, ', '.join(unused)))
+        mapping = {cfg['slots'][s]['asset']: map_asset(map_name, cfg['slots'][s]['asset']) for s in slots}
+        dest = os.path.join(BUILD, 'patched', rel.replace('/', os.sep))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        open(dest, 'wb').write(pakfile.replace_names(original, mapping))
+        out.append((dest, rel))
+    return out
+
+
+BUILT_STATE = os.path.join(BUILD, 'built_state.json')
+
+
+def snapshot(cfg):
+    """What a build of textures/ contains: each slot's texture files (size + mtime) and settings, including per-map
+    overrides. Saved after every build so tools can tell whether the installed pak is up to date."""
+    snap = {}
+    for scope in [None] + list(map_overrides(cfg)):
+        for name in cfg['slots']:
+            folder = map_folder(scope, name) if scope else os.path.join(TEXTURES, name)
+            maps = find_maps(name, folder)
+            if maps:
+                settings = os.path.join(folder, 'settings.json')
+                snap[(scope + '/' if scope else '') + name] = {
+                    'files': {k: [os.path.getsize(f), int(os.path.getmtime(f))] for k, f in maps.items()},
+                    'settings': json.load(open(settings)) if os.path.exists(settings) else {}}
+    return snap
 
 
 def mods_dir(args):

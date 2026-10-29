@@ -16,7 +16,19 @@ The replacements use **world-aligned (triplanar) mapping**, because greybox geom
 
   Everyone in a match should launch the same way.
 
-## Usage
+## Texture Studio (recommended)
+```
+pip install pillow
+python studio.py
+```
+Opens a local page in your browser (http://127.0.0.1:8765):
+- **Slots**: the 14 greybox materials, with how many maps use each.
+- **ambientCG library**: search thousands of free CC0 materials. Click one to try it on the selected slot in the 3D preview, then **Apply** to keep it. It downloads at the resolution you pick (1K/2K/4K) and converts to the maps the build needs.
+- **Preview and settings**: tile size, tint, colour, bumpiness, roughness, metallic and edge blend, previewed live with the same maths as the in-game shader.
+- **Per-map textures**: the **Texturing: All maps** picker at the top left switches to a single map. Anything you apply there changes only that map; every other slot keeps the all-maps texture.
+- **Build & install** cooks and installs in one click (about two minutes). The dot on the button means you have changes that aren't in the game yet. Undo any apply or remove from its notification or with Ctrl+Z.
+
+## Command line
 ```
 python build.py init                  # creates textures/<Slot>/ folders (already done in the repo)
 python build.py list                  # shows each slot, how many maps use it, and what you've added
@@ -49,7 +61,14 @@ To see which slot covers which surface, build the labelled debug textures:
 ```
 python make_debug_textures.py
 python build.py build --textures _build/debug_textures --allow-shared --install
-``` To share it, give your friends that file. It only changes visuals.
+```
+
+## Per-map textures
+`textures/_maps/<Map>/<Slot>/` holds a texture set (same files as above) used only by that map, e.g. `textures/_maps/CTF_Arches/White/`. The studio creates these for you.
+
+The build gives each overridden map its own copy of the material at a path of exactly the same length (`/Game/SOM/<Map>/xxxx/<Material>`) and rewrites that one entry in the map's name table. Only the small map header is patched and shipped; the map data stays in the game's paks. Per-map overrides of shared slots don't touch the shipped maps.
+
+Every player needs the same pak, because the patched map headers differ from the originals. Objects whose material comes from the mesh asset rather than the map (rare in the prototype maps) keep the all-maps texture.
 
 ## Sharing with friends
 `python build.py package` creates `out/SalvageOps_MapTextures.zip`, containing the built pak and a double-click installer. Your friends don't need Python or Unreal. They unzip it, run `Install.bat` and pick their Lemnis Gate folder. The installer:
@@ -86,4 +105,5 @@ Several shipped materials inherit from Orange and DarkGrey (for example, the whi
 ## How it works
 1. `build.py` creates a throwaway UE 4.26 project named `LemnisGate` in `_build/`, copying the game's renderer settings so shader permutations match.
 2. `ue/build_materials.py` runs inside the editor. It imports the textures, builds `M_SalvageTriplanar` (Custom HLSL nodes for triplanar albedo, normal and ORM), and creates instances at the original greybox asset paths.
-3. The project is cooked for `WindowsNoEditor` and packed with `UnrealPak`. Logs are in `_build/logs/`.
+3. For per-map overrides, `pakfile.py` reads each map header from the game's paks and redirects its material references (same-length strings, name hashes recomputed).
+4. The project is cooked for `WindowsNoEditor` and packed, with the patched map headers, using `UnrealPak`. Logs are in `_build/logs/`.

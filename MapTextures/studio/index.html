@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texture Studio</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117; --panel: #151b24; --panel2: #1c2430; --line: #2a3442; --text: #e6edf3; --dim: #8b98a8;
+  --accent: #ff8a3d; --accent2: #ffb27a; --ok: #3fb950; --warn: #e3b341; --bad: #f85149; --sel: #24324a;
+  --radius: 10px; font-family: "Segoe UI", system-ui, sans-serif; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+button { font: inherit; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--dim); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #1a0d00; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent2); }
+button.ghost { background: transparent; }
+button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+input, select { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+a { color: var(--accent2); }
+.dim { color: var(--dim); }
+.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+.badge.shared { border-color: #6b4f16; color: var(--warn); }
+.badge.on { border-color: #1f5f2c; color: var(--ok); }
+
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+header h1 span { color: var(--accent); }
+header .spacer { flex: 1; }
+.toggle { display: flex; align-items: center; gap: 6px; color: var(--dim); cursor: pointer; user-select: none; }
+#buildBtn.dirty { box-shadow: 0 0 0 3px rgba(255,138,61,.25); }
+#status { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.dot.run { background: var(--accent); animation: pulse 1s infinite; } .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .3; } }
+.menu { position: relative; }
+.menu .items { display: none; position: absolute; right: 0; top: 110%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 4px; z-index: 20; min-width: 220px; }
+.menu.open .items { display: block; }
+.menu .items button { display: block; width: 100%; text-align: left; border: 0; background: transparent; }
+.menu .items button:hover { background: var(--sel); }
+.menu .items small { display: block; color: var(--dim); }
+
+#setup { display: none; padding: 8px 16px; background: #3a2a0a; color: var(--warn); border-bottom: 1px solid #6b4f16; font-size: 13px; }
+
+main { flex: 1; display: grid; grid-template-columns: 280px minmax(380px, 1fr) minmax(400px, 1.1fr); min-height: 0; }
+section { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+section:last-child { border-right: 0; }
+.sechead { padding: 12px 14px 8px; display: flex; align-items: center; gap: 8px; }
+.sechead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin: 0; flex: 1; }
+.scroll { overflow: auto; min-height: 0; flex: 1; }
+
+/* scope picker */
+#scopeBox { position: relative; padding: 12px 8px 0; }
+#scopeBtn { width: 100%; display: flex; align-items: center; gap: 6px; text-align: left; padding: 9px 12px; }
+#scopeBtn .stack { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#scopeBtn .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+#scopeBtn b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+#scopeBtn.map { border-color: #2f6f8f; background: #14303d; }
+#scopeCount .badge { margin-left: 4px; }
+#scopePop { display: none; position: absolute; left: 8px; right: -180px; top: 100%; margin-top: 4px; z-index: 30; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.5); padding: 8px; }
+#scopeBox.open #scopePop { display: block; }
+#scopeSearch { width: 100%; margin-bottom: 6px; }
+#scopeList { max-height: 60vh; overflow: auto; }
+#scopeList .grp { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); padding: 8px 8px 4px; }
+#scopeList .opt { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+#scopeList .opt:hover, #scopeList .opt.active { background: var(--sel); }
+#scopeList .opt .n { flex: 1; }
+#scopeList .opt small { color: var(--dim); }
+.badge.map { border-color: #2f6f8f; color: #7cc7e8; }
+.slot.override .thumb { box-shadow: 0 0 0 2px #2f6f8f; }
+.inheritBox { border: 1px dashed #2f6f8f; background: #10232c; border-radius: 8px; padding: 10px; font-size: 13px; margin: 10px 0; }
+.inheritBox .row { display: flex; align-items: center; gap: 10px; }
+.inheritBox .thumb { width: 40px; height: 40px; border-radius: 6px; background-size: cover; flex: none; }
+
+/* slots */
+#slotList { padding: 0 8px 12px; }
+.slot { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; }
+.slot:hover { background: var(--panel); }
+.slot.sel { background: var(--sel); border-color: #33476a; }
+.slot .thumb { width: 44px; height: 44px; border-radius: 8px; flex: none; background-size: cover; background-position: center; border: 1px solid var(--line); position: relative; }
+.slot .thumb .chip { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--bg); }
+.slot .meta { min-width: 0; flex: 1; }
+.slot .name { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.slot .sub { font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 5px; }
+.slot .bar i { display: block; height: 100%; background: #4a6fa5; border-radius: 2px; }
+#progress { font-size: 12px; color: var(--dim); }
+
+/* editor */
+#editor { padding: 0 16px 16px; }
+#viewWrap { position: relative; border-radius: var(--radius); overflow: hidden; background: #0a0e14; border: 1px solid var(--line); aspect-ratio: 4 / 3; max-height: 46vh; width: 100%; }
+#view { width: 100%; height: 100%; display: block; cursor: grab; }
+#view:active { cursor: grabbing; }
+.viewbar { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; }
+.viewbar button { padding: 4px 9px; font-size: 12px; background: rgba(21,27,36,.85); }
+.viewbar button.on { border-color: var(--accent); color: var(--accent2); }
+#viewHint { position: absolute; right: 10px; top: 12px; font-size: 11px; color: var(--dim); pointer-events: none; }
+#tryBar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: rgba(21,27,36,.94); border: 1px solid var(--accent); border-radius: 8px; }
+#tryBar img { width: 34px; height: 34px; border-radius: 6px; }
+#tryBar .grow { flex: 1; min-width: 0; font-size: 13px; }
+.card.trying { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.toast button { margin-left: 10px; padding: 3px 10px; font-size: 12px; }
+#viewEmpty { position: absolute; inset: auto 0 12px 0; text-align: center; font-size: 13px; color: var(--dim); pointer-events: none; }
+.slotTitle { display: flex; align-items: baseline; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
+.slotTitle h3 { margin: 0; font-size: 20px; }
+.note { color: var(--dim); font-size: 13px; margin: 0 0 10px; }
+.warnbox { border: 1px solid #6b4f16; background: #2a200b; color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
+.srcrow { display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.srcrow img { width: 40px; height: 40px; border-radius: 6px; }
+.srcrow .grow { flex: 1; min-width: 0; }
+.controls { display: grid; grid-template-columns: 120px 1fr 64px; gap: 10px 10px; align-items: center; margin-top: 6px; }
+.controls label { color: var(--dim); font-size: 13px; }
+.controls output { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+.controls input[type=range] { width: 100%; accent-color: var(--accent); padding: 0; background: none; border: 0; }
+.colorRow { display: flex; gap: 8px; align-items: center; }
+.colorRow input[type=color] { width: 44px; height: 30px; padding: 2px; }
+.savedHint { font-size: 12px; color: var(--dim); min-height: 16px; margin-top: 8px; }
+details.adv summary { cursor: pointer; color: var(--dim); margin-top: 12px; font-size: 13px; }
+
+/* library */
+#libTools { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
+#libTools .row { display: flex; gap: 6px; }
+#search { flex: 1; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chips button { padding: 3px 10px; font-size: 12px; border-radius: 99px; }
+.chips button.on { border-color: var(--accent); color: var(--accent2); }
+#grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; padding: 4px 14px 14px; }
+.card { position: relative; border-radius: var(--radius); overflow: hidden; background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+.card:hover { border-color: var(--accent); }
+.card img { width: 100%; aspect-ratio: 1; display: block; background: #0a0e14; }
+.card .cname { font-size: 12px; padding: 5px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .apply { position: absolute; left: 6px; right: 6px; top: 6px; display: none; background: var(--accent); color: #1a0d00; font-weight: 600; font-size: 12px; text-align: center; border-radius: 6px; padding: 5px; }
+.card:hover .apply { display: block; }
+.card.used { border-color: var(--ok); }
+.card.used::after { content: "In use"; position: absolute; right: 6px; bottom: 30px; font-size: 11px; background: var(--ok); color: #04210b; border-radius: 99px; padding: 1px 7px; }
+.card .busy { position: absolute; inset: 0; background: rgba(13,17,23,.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; font-size: 12px; }
+.spinner { width: 22px; height: 22px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#more { margin: 0 14px 16px; }
+#libEmpty { padding: 30px; text-align: center; color: var(--dim); display: none; }
+
+/* log drawer */
+#drawer { border-top: 1px solid var(--line); background: var(--panel); }
+#drawer .head { display: flex; align-items: center; gap: 10px; padding: 6px 16px; cursor: pointer; font-size: 13px; }
+#drawer pre { margin: 0; padding: 8px 16px 12px; height: 0; overflow: auto; font: 12px/1.45 Consolas, monospace; color: #b8c4d2; transition: height .2s; white-space: pre-wrap; }
+#drawer.open pre { height: 200px; }
+
+#toasts { position: fixed; right: 16px; bottom: 50px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; max-width: 380px; box-shadow: 0 6px 24px rgba(0,0,0,.4); animation: in .2s; }
+.toast.ok { border-left-color: var(--ok); } .toast.bad { border-left-color: var(--bad); }
+@keyframes in { from { transform: translateY(8px); opacity: 0; } }
+kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Salvage Ops</span> Texture Studio</h1>
+  <div class="spacer"></div>
+  <div id="status"><span class="dot" id="statusDot"></span><span id="statusText">Idle</span></div>
+  <label class="toggle" title="Shared slots also change the finished maps"><input type="checkbox" id="allowShared"> Include shared slots</label>
+  <button class="primary" id="buildBtn" title="Cook the textures and install them into the game">Build &amp; install</button>
+  <div class="menu" id="moreMenu">
+    <button id="moreBtn" aria-haspopup="true">More ▾</button>
+    <div class="items">
+      <button data-job="debug">Debug textures<small>Labels every surface with its slot name</small></button>
+      <button data-job="package">Package for friends<small>Zip the installer and the last build</small></button>
+      <button data-job="uninstall">Uninstall from game<small>Back to the original look</small></button>
+    </div>
+  </div>
+</header>
+<div id="setup"></div>
+<main>
+  <section>
+    <div id="scopeBox">
+      <button id="scopeBtn" aria-haspopup="listbox" title="Choose which map you are texturing">
+        <span class="stack"><span class="lbl">Texturing</span><b id="scopeName">All maps</b></span><span id="scopeCount"></span><span class="caret">▾</span></button>
+      <div id="scopePop" role="listbox">
+        <input id="scopeSearch" type="search" placeholder="Find a map…" autocomplete="off">
+        <div id="scopeList"></div>
+      </div>
+    </div>
+    <div class="sechead"><h2>Material slots</h2><span id="progress"></span></div>
+    <div class="scroll"><div id="slotList"><div class="dim" style="padding:12px">Loading…</div></div></div>
+  </section>
+  <section>
+    <div class="scroll" id="editor">
+      <div class="sechead" style="padding-left:0;padding-right:0"><h2>Preview</h2></div>
+      <div id="viewWrap">
+        <canvas id="view"></canvas>
+        <div class="viewbar" id="shapes">
+          <button data-shape="room" class="on">Room</button><button data-shape="block">Block</button><button data-shape="sphere">Sphere</button>
+        </div>
+        <div id="viewEmpty"></div>
+        <div id="tryBar" style="display:none"></div>
+        <div id="viewHint">Drag to orbit · scroll to zoom</div>
+      </div>
+      <div class="slotTitle"><h3 id="slotName"></h3><span id="slotBadges"></span></div>
+      <p class="note" id="slotNote"></p>
+      <div id="sharedWarn" class="warnbox" style="display:none"></div>
+      <div id="srcRow" class="srcrow"></div>
+      <div id="controls"></div>
+      <div class="savedHint" id="savedHint"></div>
+    </div>
+  </section>
+  <section>
+    <div class="sechead"><h2>ambientCG library</h2><span class="dim" style="font-size:12px">CC0 · free to use</span></div>
+    <div id="libTools">
+      <div class="row">
+        <input id="search" type="search" placeholder="Search materials…  ( / )" autocomplete="off">
+        <select id="sort" title="Sort"><option value="Popular">Popular</option><option value="Latest">Newest</option><option value="Alphabet">A–Z</option></select>
+        <select id="res" title="Download resolution: higher is sharper but makes a bigger pak">
+          <option value="1K">1K</option><option value="2K" selected>2K</option><option value="4K">4K</option>
+        </select>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="scroll" id="libScroll">
+      <div id="grid"></div>
+      <div id="libEmpty">No materials found.</div>
+      <button id="more" style="display:none">Load more</button>
+    </div>
+  </section>
+</main>
+<div id="drawer">
+  <div class="head" id="drawerHead"><span class="dot" id="logDot"></span><b id="logTitle">Build log</b><span class="dim" id="logInfo"></span><span style="flex:1"></span><span class="dim">▲▼</span></div>
+  <pre id="log"></pre>
+</div>
+<div id="toasts"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (path, body) => {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+// action = { label, run } adds a button (e.g. Undo) to the notification.
+const toast = (msg, kind = '', action = null) => {
+  const t = document.createElement('div'); t.className = 'toast ' + kind; t.innerHTML = msg;
+  if (action) {
+    const b = document.createElement('button'); b.textContent = action.label;
+    b.onclick = async () => { b.disabled = true; try { await action.run(); } finally { t.remove(); } };
+    t.appendChild(b);
+  }
+  $('#toasts').appendChild(t); setTimeout(() => t.remove(), action ? 12000 : kind === 'bad' ? 9000 : 5000);
+};
+const TINTED = ['White', 'Orange', 'Green', 'Red', 'Yellow', 'Black', 'PaintedMetalBase'];
+// What the build uses for a slot that has no settings yet (mirrors slots.json defaults and studio.py).
+const defaultsFor = s => ({ tile_size: 200, blend_sharpness: 4, tint_strength: TINTED.includes(s.name) ? 1 : 0,
+  normal_strength: 1, roughness: 1, metallic: 1, color: s.color.slice() });
+const lin2srgb = c => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+const srgb2lin = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const toHex = rgb => '#' + rgb.map(c => Math.round(Math.min(1, Math.max(0, lin2srgb(c))) * 255).toString(16).padStart(2, '0')).join('');
+const fromHex = h => [1, 3, 5].map(i => srgb2lin(parseInt(h.substr(i, 2), 16) / 255));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+let slots = [], sel = null, status = {}, dirty = false, builtShared = false, overrides = {}, mapIndex = {};
+// scope = null edits the all-maps textures; a map name edits that map's own overrides.
+let scope = null;
+const scopeQ = () => scope ? 'map=' + encodeURIComponent(scope) : '';
+const texUrl = (s, k) => `/tex/${s.name}/${k}?v=${s.stamp}` + (scope ? '&' + scopeQ() : '');
+const withScope = body => scope ? Object.assign({ map: scope }, body) : body;
+// Toggling "Include shared slots" changes what a build contains when a shared slot has textures.
+const sharedMismatch = list => list.some(s => s.shared && s.maps.length) && builtShared !== $('#allowShared').checked;
+const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+
+// ------------------------------------------------------------------ slots
+async function loadSlots(keepSel = true) {
+  const data = await api('/api/slots' + (scope ? '?' + scopeQ() : ''));
+  slots = data.slots; status = data.status; overrides = data.overrides || {};
+  builtShared = data.built_shared;
+  if (store.get('shared') === null) $('#allowShared').checked = builtShared;
+  dirty = data.dirty || sharedMismatch(data.slots);
+  renderSlots();
+  renderSetup();
+  $('#buildBtn').classList.toggle('dirty', dirty);
+  $('#buildBtn').textContent = dirty ? 'Build & install •' : 'Build & install';
+  $('#buildBtn').title = dirty ? 'You have changes that are not in the game yet' : 'Cook the textures and install them into the game';
+  renderScope();
+  const want = keepSel && sel ? sel.name : (store.get('slot') || slots[0].name);
+  selectSlot(slots.find(s => s.name === want) || slots[0], false);
+}
+
+function slotThumb(s) {
+  return s.maps.includes('albedo') ? `url(${texUrl(s, 'albedo')})` : 'none';
+}
+const overrideCount = name => Object.values(overrides).filter(list => list.includes(name)).length;
+function slotSub(s) {
+  const what = s.source ? esc(s.source.asset) : (s.maps.length ? 'Custom texture' : 'Untextured');
+  if (scope) return s.inherited ? `All maps: ${what}` : `<b style="color:#7cc7e8">This map:</b> ${what}`;
+  const n = overrideCount(s.name);
+  return `${what} · ${s.proto_maps} maps` + (n ? ` · <span style="color:#7cc7e8">+${n}</span>` : '');
+}
+
+function renderSlots() {
+  const max = Math.max(...slots.map(s => s.proto_maps));
+  const done = slots.filter(s => scope ? !s.inherited : s.maps.length).length;
+  $('#progress').textContent = scope ? `${done} of ${slots.length} overridden` : `${done} of ${slots.length} textured`;
+  $('#slotList').innerHTML = slots.map(s => `
+    <div class="slot ${sel && sel.name === s.name ? 'sel' : ''} ${scope && !s.inherited ? 'override' : ''}" data-slot="${s.name}" tabindex="0">
+      <div class="thumb" style="background-color:${toHex(s.color)};background-image:${slotThumb(s)}">
+        <span class="chip" style="background:${toHex(s.color)}" title="Original colour"></span></div>
+      <div class="meta">
+        <div class="name">${s.name} ${s.shared ? '<span class="badge shared">shared</span>' : ''}</div>
+        <div class="sub">${slotSub(s)}</div>
+        ${scope ? '' : `<div class="bar"><i style="width:${s.proto_maps / max * 100}%"></i></div>`}
+      </div>
+    </div>`).join('');
+}
+
+function renderSetup() {
+  const msgs = [];
+  if (!status.ue) msgs.push(`Unreal Engine 4.26 not found at <code>${esc(status.ue_path)}</code>. You can pick textures now, but building needs it (Epic Games Launcher → Unreal Engine → Library → + → 4.26).`);
+  if (!status.game) msgs.push('Lemnis Gate was not found through Steam, so "Build & install" can only build. Use the command line with --game to install.');
+  if (status.game_running) msgs.push('Lemnis Gate is running. Close it before building: the game locks the texture pak.');
+  $('#setup').innerHTML = msgs.join('<br>');
+  $('#setup').style.display = msgs.length ? 'block' : 'none';
+}
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('.slot'); if (el) selectSlot(slots.find(s => s.name === el.dataset.slot));
+});
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
+  if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const i = slots.indexOf(sel) + (e.key === 'ArrowDown' ? 1 : -1);
+    if (slots[i]) { e.preventDefault(); selectSlot(slots[i]); document.querySelector('.slot.sel')?.scrollIntoView({ block: 'nearest' }); }
+  }
+});
+
+// ------------------------------------------------------------------ editor
+const CONTROLS = [
+  { key: 'tile_size', label: 'Tile size', min: 50, max: 1000, step: 10, fmt: v => (v / 100).toFixed(1) + ' m', help: 'World size of one texture repeat' },
+  { key: 'tint_strength', label: 'Tint', min: 0, max: 1, step: 0.05, fmt: v => Math.round(v * 100) + '%', help: 'Recolour to the slot colour while keeping the texture detail' },
+  { key: 'normal_strength', label: 'Bumpiness', min: 0, max: 2, step: 0.05, fmt: v => v.toFixed(2) + '×', help: 'Strength of the normal map' },
+  { key: 'roughness', label: 'Roughness', min: 0, max: 2, step: 0.05, fmt: v => v.toFixed(2) + '×', help: 'Multiplier on the roughness map', adv: true },
+  { key: 'metallic', label: 'Metallic', min: 0, max: 1, step: 0.05, fmt: v => v.toFixed(2) + '×', help: 'Multiplier on the metalness map', adv: true },
+  { key: 'blend_sharpness', label: 'Edge blend', min: 1, max: 16, step: 0.5, fmt: v => v.toFixed(1), help: 'How sharply the projection switches between faces on angled surfaces', adv: true },
+];
+
+function selectSlot(s, save = true) {
+  if (trying && (!sel || s.name !== sel.name)) { trying = null; $('#tryBar').style.display = 'none'; document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying')); }
+  sel = s; if (save) store.set('slot', s.name);
+  document.querySelectorAll('.slot').forEach(el => el.classList.toggle('sel', el.dataset.slot === s.name));
+  $('#slotName').textContent = s.name;
+  $('#slotBadges').innerHTML = scope
+    ? (s.inherited ? `<span class="badge">uses the all-maps texture</span>` : `<span class="badge map">${esc(scope)} only</span>`)
+    : `<span class="badge">${s.proto_maps} prototype maps</span> ` +
+      (s.shared ? '<span class="badge shared">shared</span> ' : '') +
+      (s.maps.length ? '<span class="badge on">textured</span>' : '<span class="badge">untextured</span>');
+  $('#slotNote').innerHTML = (scope ? `Changes only <b>${esc(scope)}</b>; every other map keeps the all-maps texture.` : esc(s.note)) +
+    ` <span class="dim">· replaces <code>${esc(s.asset.split('/').pop())}</code></span>`;
+  const warn = $('#sharedWarn');
+  warn.style.display = s.shared ? 'block' : 'none';
+  warn.innerHTML = s.shared ? `Shared slot: it also changes the finished maps. It is only built when <b>Include shared slots</b> is ticked${$('#allowShared').checked ? ' (it is)' : ' (it is not)'}.` : '';
+  renderSource();
+  renderControls();
+  highlightUsed();
+  preview.setSlot(s);
+}
+
+function renderSource() {
+  const s = sel, src = s.source;
+  if (scope && s.inherited) {
+    $('#srcRow').innerHTML = `<div class="grow"><div class="inheritBox" style="margin:0"><div class="row">
+      ${s.maps.length ? `<div class="thumb" style="background-image:url(${texUrl(s, 'albedo')})"></div>` : ''}
+      <div style="flex:1"><b>${esc(scope)}</b> uses the all-maps ${s.maps.length ? `texture <b>${src ? esc(src.asset) : 'Custom'}</b>` : 'look (untextured)'} for ${s.name}.
+      <div class="dim">Pick a material on the right to give this map its own.</div></div>
+      <button class="ghost" id="editAll">Edit all-maps</button></div></div></div>`;
+    $('#editAll').onclick = () => setScope(null);
+    return;
+  }
+  if (!s.maps.length) {
+    $('#srcRow').innerHTML = `<div class="grow dim">No texture yet. Pick a material from the library on the right to apply it to <b>${s.name}</b>.</div>`;
+  } else {
+    $('#srcRow').innerHTML = `
+      <div class="thumb" style="width:40px;height:40px;border-radius:6px;background:center/cover url(${texUrl(s, 'albedo')})"></div>
+      <div class="grow"><b>${src ? esc(src.asset) : 'Custom texture'}</b><div class="dim" style="font-size:12px">
+        ${src ? `${src.resolution} · <a href="${esc(src.source)}" target="_blank" rel="noopener">view on ambientCG</a> · ` : ''}maps: ${s.maps.join(', ')}</div></div>
+      <button class="danger" id="clearBtn" title="${scope ? 'Go back to the all-maps texture on this map' : 'Remove the texture from this slot'}">${scope ? 'Remove override' : 'Remove'}</button>`;
+    $('#clearBtn').onclick = async () => {
+      const r = await api('/api/clear', withScope({ slot: s.name }));
+      toast(scope ? `<b>${esc(scope)}</b> now uses the all-maps texture for <b>${s.name}</b>.` : `Removed the texture from <b>${s.name}</b>.`, '', undoAction(s.name, r.undo));
+      await loadSlots();
+    };
+  }
+}
+
+let saveTimer = null;
+function renderControls() {
+  const s = sel, e = s.effective;
+  if (!e || (s.inherited && !s.tempEffective)) { $('#controls').innerHTML = ''; $('#savedHint').textContent = ''; return; }
+  const row = c => `
+    <label for="c_${c.key}" title="${c.help}">${c.label}</label>
+    <input type="range" id="c_${c.key}" data-key="${c.key}" min="${c.min}" max="${c.max}" step="${c.step}" value="${e[c.key]}" title="${c.help}">
+    <output id="o_${c.key}">${c.fmt(+e[c.key])}</output>`;
+  $('#controls').innerHTML = `
+    <div class="controls">
+      ${CONTROLS.filter(c => !c.adv).map(row).join('')}
+      <label for="c_color">Colour</label>
+      <div class="colorRow"><input type="color" id="c_color" value="${toHex(e.color)}">
+        <button class="ghost" id="resetColor" ${JSON.stringify(e.color) === JSON.stringify(s.color) ? 'disabled' : ''}>Reset to original</button></div><span></span>
+    </div>
+    <details class="adv" ${store.get('adv') === '1' ? 'open' : ''}><summary>Advanced</summary>
+      <div class="controls">${CONTROLS.filter(c => c.adv).map(row).join('')}</div></details>`;
+  $('#controls details').ontoggle = ev => store.set('adv', ev.target.open ? '1' : '0');
+  $('#controls').querySelectorAll('input[type=range]').forEach(inp => inp.oninput = () => {
+    const c = CONTROLS.find(c => c.key === inp.dataset.key);
+    e[c.key] = +inp.value; $('#o_' + c.key).textContent = c.fmt(+inp.value);
+    preview.update(e); queueSave();
+  });
+  $('#c_color').oninput = ev => { e.color = fromHex(ev.target.value); $('#resetColor').disabled = false; preview.update(e); queueSave(); };
+  $('#resetColor').onclick = () => { e.color = s.color.slice(); $('#c_color').value = toHex(e.color); $('#resetColor').disabled = true; preview.update(e); queueSave(); };
+  $('#savedHint').textContent = '';
+}
+
+function settingsOf(s) {
+  const e = s.effective, settings = {};
+  CONTROLS.forEach(c => settings[c.key] = e[c.key]);
+  if (JSON.stringify(e.color) !== JSON.stringify(s.color)) settings.color = e.color;
+  return settings;
+}
+function queueSave() {
+  const s = sel;
+  if (s.tempEffective) { $('#savedHint').textContent = 'Kept when you apply this material'; return; }
+  $('#savedHint').textContent = 'Saving…';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await api('/api/settings', withScope({ slot: s.name, settings: settingsOf(s) }));
+      $('#savedHint').textContent = 'Saved · build to see it in-game';
+      if (!dirty) { dirty = true; $('#buildBtn').classList.add('dirty'); $('#buildBtn').textContent = 'Build & install •'; }
+    } catch (err) { $('#savedHint').textContent = 'Could not save: ' + err.message; }
+  }, 400);
+}
+
+$('#allowShared').checked = store.get('shared') === '1';
+$('#allowShared').onchange = ev => { store.set('shared', ev.target.checked ? '1' : '0'); loadSlots(); };
+
+// ------------------------------------------------------------------ 3D preview
+const preview = (() => {
+  const canvas = $('#view');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.85;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0e14);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
+
+  // Soft studio environment so metals have something to reflect.
+  const envScene = new THREE.Scene();
+  const envGeo = new THREE.SphereGeometry(50, 32, 16);
+  const envCols = []; const pos = envGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i) / 50, c = new THREE.Color().setHSL(0.6, 0.15, 0.08 + Math.max(0, y) * 0.7);
+    envCols.push(c.r, c.g, c.b);
+  }
+  envGeo.setAttribute('color', new THREE.Float32BufferAttribute(envCols, 3));
+  envScene.add(new THREE.Mesh(envGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+
+  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20242c, 0.35));
+  const sun = new THREE.DirectionalLight(0xfff1e0, 1.8);
+  sun.position.set(6, 10, 3); sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.02;
+  Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 30 });
+  scene.add(sun);
+
+  const loader = new THREE.TextureLoader();
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0 });
+  const group = new THREE.Group(); scene.add(group);
+  const meshes = [];
+  let tile = 2, shape = store.get('shape') || 'room', albedoImg = null, albedoCanvas = null, albedoTex = null, meanLum = 0.5;
+  let slotKey = '', loadToken = 0, current = null;
+
+  // Box with UVs measured in metres so the texture tiles at world scale, like the in-game projection.
+  function box(w, h, d, x, y, z) {
+    const g = new THREE.BoxGeometry(w, h, d);
+    const dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+    const uv = g.attributes.uv;
+    for (let f = 0; f < 6; f++) for (let v = 0; v < 4; v++) {
+      const i = f * 4 + v; uv.setXY(i, uv.getX(i) * dims[f][0], uv.getY(i) * dims[f][1]);
+    }
+    g.setAttribute('uv2', uv.clone());
+    const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; return m;
+  }
+  function sphere(r) {
+    const g = new THREE.SphereGeometry(r, 96, 48);
+    const uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2 * Math.PI * r, uv.getY(i) * Math.PI * r);
+    g.setAttribute('uv2', uv.clone());
+    const m = new THREE.Mesh(g, mat); m.castShadow = m.receiveShadow = true; return m;
+  }
+  // Greybox-style corner: floor, two walls, a pillar, a crate and a ramp, at roughly in-game scale (metres).
+  function ramp() {
+    const m = box(1.6, 0.25, 3, 2.3, 0.6, -1.6); m.rotation.x = -0.4; return m;
+  }
+  const SHAPES = {
+    room: { build: () => [box(8, 0.2, 8, 0, -0.1, 0), box(8, 4, 0.3, 0, 2, -4), box(0.3, 4, 8, -4, 2, 0),
+                          box(1, 3, 1, 0.6, 1.5, 0.6), box(2, 1, 2, -2.2, 0.5, -2.2), ramp()],
+            cam: [9.5, 6, 9.5], target: [-0.8, 0.9, -0.8] },
+    block: { build: () => [box(2, 2, 2, 0, 0, 0)], cam: [3.6, 2.6, 3.6], target: [0, 0, 0] },
+    sphere: { build: () => [sphere(1.2)], cam: [2.9, 1.5, 2.9], target: [0, 0, 0] },
+  };
+  let orbit = { theta: 0.8, phi: 1.1, dist: 10, target: new THREE.Vector3() };
+
+  function setShape(name) {
+    shape = name; store.set('shape', name);
+    meshes.forEach(m => { group.remove(m); m.geometry.dispose(); }); meshes.length = 0;
+    SHAPES[name].build().forEach(m => { meshes.push(m); group.add(m); });
+    const c = new THREE.Vector3(...SHAPES[name].cam), t = new THREE.Vector3(...SHAPES[name].target);
+    const off = c.clone().sub(t);
+    orbit = { theta: Math.atan2(off.x, off.z), phi: Math.acos(off.y / off.length()), dist: off.length(), target: t };
+    document.querySelectorAll('#shapes button').forEach(b => b.classList.toggle('on', b.dataset.shape === name));
+    applyTile();
+  }
+  document.querySelectorAll('#shapes button').forEach(b => b.onclick = () => setShape(b.dataset.shape));
+
+  function applyTile() {
+    [mat.map, mat.normalMap, mat.roughnessMap].forEach(t => { if (t) { t.repeat.set(1 / tile, 1 / tile); } });
+  }
+
+  function texture(url, srgb) {
+    return new Promise((res, rej) => loader.load(url, t => {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      if (srgb) t.encoding = THREE.sRGBEncoding; res(t);
+    }, undefined, rej));
+  }
+
+  // Same maths as the game shader: lerp(albedo, colour * luminance / meanLuminance, tint).
+  function retint(e) {
+    if (!albedoImg) return;
+    const w = albedoImg.width, h = albedoImg.height;
+    if (!albedoCanvas) { albedoCanvas = document.createElement('canvas'); albedoCanvas.width = w; albedoCanvas.height = h; }
+    const ctx = albedoCanvas.getContext('2d');
+    ctx.drawImage(albedoImg, 0, 0, w, h);
+    if (e.tint_strength > 0) {
+      const d = ctx.getImageData(0, 0, w, h), px = d.data, s = e.tint_strength, col = e.color;
+      const lut = new Float32Array(256); for (let i = 0; i < 256; i++) lut[i] = srgb2lin(i / 255);
+      for (let i = 0; i < px.length; i += 4) {
+        const r = lut[px[i]], g = lut[px[i + 1]], b = lut[px[i + 2]];
+        const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / meanLum;
+        px[i] = lin2srgb(r + (col[0] * l - r) * s) * 255;
+        px[i + 1] = lin2srgb(g + (col[1] * l - g) * s) * 255;
+        px[i + 2] = lin2srgb(b + (col[2] * l - b) * s) * 255;
+      }
+      ctx.putImageData(d, 0, 0);
+    }
+    if (!albedoTex) {
+      albedoTex = new THREE.CanvasTexture(albedoCanvas);
+      albedoTex.wrapS = albedoTex.wrapT = THREE.RepeatWrapping; albedoTex.encoding = THREE.sRGBEncoding;
+      albedoTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    }
+    albedoTex.needsUpdate = true;
+    mat.map = albedoTex; applyTile(); mat.needsUpdate = true;
+  }
+
+  // Show a slot's own textures, or a staged library material (src = {key, base, maps}) with the slot's settings.
+  async function setSlot(s, src) {
+    current = s;
+    src = src || { key: (scope || '') + ':' + s.name + ':' + s.stamp, url: k => texUrl(s, k), maps: s.maps };
+    const key = src.key;
+    if (key === slotKey) { update(s.effective || defaultsFor(s)); return; }
+    slotKey = key; const token = ++loadToken;
+    [mat.map, mat.normalMap, mat.roughnessMap].forEach(t => t && t !== albedoTex && t.dispose());
+    if (albedoTex) { albedoTex.dispose(); albedoTex = null; } albedoCanvas = null; albedoImg = null;
+    mat.map = mat.normalMap = mat.roughnessMap = mat.metalnessMap = mat.aoMap = null;
+    if (!src.maps.length) {
+      mat.color.setRGB(...s.color); mat.roughness = 0.5; mat.metalness = 0; mat.needsUpdate = true;
+      $('#viewEmpty').textContent = 'Untextured: this is the flat greybox colour.';
+      return;
+    }
+    $('#viewEmpty').textContent = 'Loading…';
+    const [img, normal, orm] = await Promise.all([
+      new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src.url('albedo'); }),
+      src.maps.includes('normal') ? texture(src.url('normal'), false) : null,
+      src.maps.includes('orm') ? texture(src.url('orm'), false) : null,
+    ]);
+    if (token !== loadToken) return;
+    albedoImg = img;
+    // Mean linear luminance of the albedo, matching what the build measures.
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, 64, 64);
+    const px = cx.getImageData(0, 0, 64, 64).data; let sum = 0;
+    for (let i = 0; i < px.length; i += 4) sum += 0.2126 * srgb2lin(px[i] / 255) + 0.7152 * srgb2lin(px[i + 1] / 255) + 0.0722 * srgb2lin(px[i + 2] / 255);
+    meanLum = Math.max(sum / (px.length / 4), 0.01);
+    mat.color.setRGB(1, 1, 1);
+    mat.normalMap = normal; mat.roughnessMap = orm; mat.metalnessMap = orm; mat.aoMap = orm;
+    $('#viewEmpty').textContent = '';
+    update(s.effective || defaultsFor(s));
+  }
+
+  function update(e) {
+    if (!e || !albedoImg) return;
+    tile = e.tile_size / 100;
+    mat.roughness = e.roughness; mat.metalness = e.metallic;
+    if (mat.normalMap) mat.normalScale.set(e.normal_strength, -e.normal_strength); // DirectX normal maps
+    retint(e); applyTile(); mat.needsUpdate = true;
+  }
+
+  // Orbit controls
+  let drag = null;
+  canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointermove', e => {
+    if (!drag) return;
+    orbit.theta -= (e.clientX - drag.x) * 0.008;
+    orbit.phi = Math.min(Math.PI - 0.15, Math.max(0.15, orbit.phi - (e.clientY - drag.y) * 0.008));
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('pointerup', () => drag = null);
+  canvas.addEventListener('wheel', e => { e.preventDefault(); orbit.dist = Math.min(40, Math.max(1.2, orbit.dist * (1 + Math.sign(e.deltaY) * 0.1))); }, { passive: false });
+
+  function resize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * devicePixelRatio || canvas.height !== h * devicePixelRatio) {
+      renderer.setPixelRatio(devicePixelRatio); renderer.setSize(w, h, false);
+      camera.aspect = w / h; camera.updateProjectionMatrix();
+    }
+  }
+  function frame() {
+    resize();
+    const t = orbit.target, r = orbit.dist;
+    camera.position.set(t.x + r * Math.sin(orbit.phi) * Math.sin(orbit.theta), t.y + r * Math.cos(orbit.phi), t.z + r * Math.sin(orbit.phi) * Math.cos(orbit.theta));
+    camera.lookAt(t);
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  }
+  setShape(shape); frame();
+  return { setSlot, update };
+})();
+
+// ------------------------------------------------------------------ library
+const CHIPS = ['Metal', 'Painted metal', 'Metal plates', 'Concrete', 'Tiles', 'Bricks', 'Rock', 'Ground', 'Planks', 'Plastic', 'Fabric', 'Asphalt', 'Diamond plate', 'Rust'];
+let lib = { q: store.get('q') || '', offset: 0, total: 0, items: [], loading: false, token: 0 };
+$('#search').value = lib.q;
+$('#sort').value = store.get('sort') || 'Popular';
+$('#res').value = store.get('res') || '2K';
+$('#chips').innerHTML = CHIPS.map(c => `<button data-q="${c}">${c}</button>`).join('');
+function syncChips() { document.querySelectorAll('#chips button').forEach(b => b.classList.toggle('on', b.dataset.q.toLowerCase() === lib.q.toLowerCase())); }
+$('#chips').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  $('#search').value = lib.q.toLowerCase() === b.dataset.q.toLowerCase() ? '' : b.dataset.q; search();
+};
+let searchTimer;
+$('#search').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 350); };
+$('#search').onkeydown = e => { if (e.key === 'Enter') { clearTimeout(searchTimer); search(); } };
+$('#sort').onchange = () => { store.set('sort', $('#sort').value); search(); };
+$('#res').onchange = () => store.set('res', $('#res').value);
+$('#more').onclick = () => fetchPage();
+$('#libScroll').addEventListener('scroll', e => {
+  const el = e.target; if (el.scrollTop + el.clientHeight > el.scrollHeight - 300) fetchPage();
+});
+
+function search() {
+  lib.q = $('#search').value.trim(); store.set('q', lib.q); syncChips();
+  lib.offset = 0; lib.items = []; lib.total = 0; lib.token++; lib.loading = false;
+  $('#grid').innerHTML = ''; $('#libScroll').scrollTop = 0;
+  fetchPage();
+}
+async function fetchPage() {
+  if (lib.loading || (lib.offset && lib.offset >= lib.total)) return;
+  lib.loading = true; const token = lib.token;
+  $('#more').style.display = 'block'; $('#more').disabled = true; $('#more').innerHTML = '<span class="spinner" style="display:inline-block;width:14px;height:14px;vertical-align:middle"></span> Loading…';
+  try {
+    const qs = new URLSearchParams({ q: lib.q, sort: $('#sort').value, offset: lib.offset });
+    const data = await api('/api/search?' + qs);
+    if (token !== lib.token) return;
+    lib.total = data.total; lib.offset += 48;
+    lib.items.push(...data.results);
+    $('#grid').insertAdjacentHTML('beforeend', data.results.map(cardHtml).join(''));
+    highlightUsed();
+    $('#libEmpty').style.display = lib.items.length ? 'none' : 'block';
+  } catch (err) {
+    if (token === lib.token) toast('Could not reach ambientCG: ' + esc(err.message), 'bad');
+  } finally {
+    if (token === lib.token) {
+      lib.loading = false;
+      const more = lib.offset < lib.total;
+      $('#more').style.display = more ? 'block' : 'none'; $('#more').disabled = false; $('#more').textContent = `Load more (${lib.total - lib.items.length} left)`;
+    }
+  }
+}
+function cardHtml(a) {
+  return `<div class="card" data-id="${esc(a.id)}" title="${esc(a.name)}\n${esc(a.tags.join(', '))}">
+    <img loading="lazy" src="${esc(a.preview)}" alt="">
+    <div class="cname">${esc(a.name)}</div>
+    <div class="apply">Try on ${sel ? sel.name : 'slot'}</div></div>`;
+}
+function highlightUsed() {
+  const used = sel && sel.source ? sel.source.asset : null;
+  document.querySelectorAll('.card').forEach(c => {
+    c.classList.toggle('used', c.dataset.id === used);
+    c.querySelector('.apply').textContent = c.dataset.id === used ? `In use on ${sel.name}` :
+      c.classList.contains('trying') ? `Apply to ${sel.name}` : `Try on ${sel ? sel.name : 'slot'}`;
+  });
+}
+// Every apply/remove can be undone from its notification or with Ctrl+Z.
+const undoStack = [];
+async function runUndo(entry) {
+  const i = undoStack.indexOf(entry); if (i < 0) return;
+  undoStack.splice(i, 1);
+  await api('/api/undo', entry.scope ? { slot: entry.slot, undo: entry.id, map: entry.scope } : { slot: entry.slot, undo: entry.id });
+  toast(`Restored <b>${entry.slot}</b>.`);
+  await loadSlots();
+  const s = slots.find(x => x.name === entry.slot); if (s) selectSlot(s);
+}
+const undoAction = (slot, id) => { const entry = { slot, id, scope }; undoStack.push(entry); return { label: 'Undo', run: () => runUndo(entry) }; };
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches('input, select')) {
+    e.preventDefault();
+    if (undoStack.length) runUndo(undoStack[undoStack.length - 1]); else toast('Nothing to undo.');
+  }
+});
+
+// Click a material to try it on the selected slot; Apply makes it permanent.
+let trying = null;
+function pickRes(a) {
+  const want = $('#res').value, order = ['1K', '2K', '4K'];
+  if (a.resolutions.includes(want)) return want;
+  return order.filter(r => a.resolutions.includes(r)).pop() || a.resolutions[0];
+}
+async function tryMaterial(card, a) {
+  const slot = sel, res = pickRes(a);
+  card.insertAdjacentHTML('beforeend', `<div class="busy"><div class="spinner"></div>Downloading ${res}…</div>`);
+  try {
+    const st = await api('/api/stage', { asset: a.id, resolution: res });
+    if (sel !== slot) return;
+    trying = { a, res, slot: slot.name };
+    document.querySelectorAll('.card').forEach(c => c.classList.toggle('trying', c === card));
+    highlightUsed();
+    if (!slot.effective || slot.inherited) {
+      slot.savedEffective = slot.effective;
+      slot.effective = slot.effective ? JSON.parse(JSON.stringify(slot.effective)) : defaultsFor(slot);
+      slot.tempEffective = true; renderControls();
+    }
+    preview.setSlot(slot, { key: 'stage:' + st.id, url: k => `/stage/${st.id}/${k}`, maps: st.maps });
+    $('#tryBar').style.display = 'flex';
+    $('#tryBar').innerHTML = `<img src="${esc(a.preview)}" alt=""><div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}</b>${scope ? ` (${esc(scope)} only)` : ''}
+      <div class="dim" style="font-size:12px">${res} · not applied yet</div></div>
+      <button class="ghost" id="tryCancel">Cancel</button><button class="primary" id="tryApply">Apply to ${slot.name}</button>`;
+    $('#tryCancel').onclick = endTry;
+    $('#tryApply').onclick = () => applyMaterial(a, res, slot);
+  } catch (err) {
+    toast(`Could not download ${esc(a.name)}: ${esc(err.message)}`, 'bad');
+  } finally { card.querySelector('.busy')?.remove(); }
+}
+function endTry() {
+  trying = null; $('#tryBar').style.display = 'none';
+  document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying'));
+  highlightUsed();
+  if (sel && sel.tempEffective) { sel.effective = sel.savedEffective || null; sel.tempEffective = false; renderControls(); }
+  if (sel) preview.setSlot(sel);
+}
+async function applyMaterial(a, res, slot) {
+  $('#tryApply').disabled = true;
+  try {
+    clearTimeout(saveTimer);
+    const r = await api('/api/assign', withScope({ slot: slot.name, asset: a.id, resolution: res }));
+    // Keep any slider changes made while trying.
+    if (slot.effective) await api('/api/settings', withScope({ slot: slot.name, settings: settingsOf(slot) }));
+    trying = null; $('#tryBar').style.display = 'none';
+    document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying'));
+    toast(`<b>${esc(a.name)}</b> applied to <b>${slot.name}</b>${scope ? ` on <b>${esc(scope)}</b> only` : ''}. Build &amp; install to see it in-game.`, 'ok', undoAction(slot.name, r.undo));
+    await loadSlots();
+  } catch (err) {
+    toast(`Could not apply ${esc(a.name)}: ${esc(err.message)}`, 'bad');
+    $('#tryApply').disabled = false;
+  }
+}
+$('#grid').onclick = e => {
+  const card = e.target.closest('.card'); if (!card || card.querySelector('.busy')) return;
+  const a = lib.items.find(i => i.id === card.dataset.id);
+  if (e.target.closest('.apply') && card.classList.contains('trying')) return applyMaterial(a, pickRes(a), sel);
+  tryMaterial(card, a);
+};
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && trying && !e.target.matches('input')) endTry(); });
+
+// ------------------------------------------------------------------ jobs
+$('#buildBtn').onclick = () => startJob('build');
+$('#moreBtn').onclick = e => { e.stopPropagation(); $('#moreMenu').classList.toggle('open'); };
+document.addEventListener('click', () => $('#moreMenu').classList.remove('open'));
+document.querySelectorAll('#moreMenu [data-job]').forEach(b => b.onclick = () => startJob(b.dataset.job));
+$('#drawerHead').onclick = () => $('#drawer').classList.toggle('open');
+
+let jobTimer = null, jobStart = 0, lastJob = null;
+async function startJob(kind) {
+  if (kind === 'build' && !slots.some(s => s.maps.length && (!s.shared || $('#allowShared').checked))) {
+    toast('Nothing to build yet: apply a material to at least one slot' + (slots.some(s => s.maps.length) ? ', or tick <b>Include shared slots</b>.' : '.'), 'bad');
+    return;
+  }
+  try {
+    await api('/api/job', { kind, allow_shared: $('#allowShared').checked });
+    $('#drawer').classList.add('open'); jobStart = Date.now(); pollJob();
+  } catch (err) { toast(esc(err.message), 'bad'); }
+}
+async function pollJob() {
+  clearTimeout(jobTimer);
+  const j = await api('/api/job');
+  const running = j.running;
+  $('#statusDot').className = 'dot ' + (running ? 'run' : j.ok === true ? 'ok' : j.ok === false ? 'bad' : '');
+  $('#logDot').className = $('#statusDot').className;
+  const secs = Math.round((Date.now() - jobStart) / 1000);
+  const step = (j.log.match(/\[(\d)\/4\][^\n]*/g) || []).pop();
+  $('#statusText').textContent = running ? `${j.title}… ${step ? step.slice(0, 5) : ''} ${secs}s` : j.ok === true ? `${j.title}: done` : j.ok === false ? `${j.title}: failed` : 'Idle';
+  $('#logTitle').textContent = j.title || 'Build log';
+  $('#logInfo').textContent = running ? (step ? step.replace(/^\[\d\/4\] /, '') : 'starting') : '';
+  const log = $('#log'), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = j.log; if (atBottom) log.scrollTop = log.scrollHeight;
+  document.querySelectorAll('#buildBtn, #moreMenu [data-job]').forEach(b => b.disabled = running);
+  if (running) { jobTimer = setTimeout(pollJob, 700); lastJob = j.title; return; }
+  if (lastJob) {
+    if (j.ok) toast(j.title === 'Build and install' ? 'Installed. Start the game <b>without EasyAntiCheat</b> (LemnisGate-Win64-Shipping.exe or the Salvage Ops shortcut) to see it.' : `${j.title}: done.`, 'ok');
+    else toast(`${j.title} failed. See the build log below.`, 'bad');
+    lastJob = null; loadSlots();
+  }
+}
+
+// ------------------------------------------------------------------ map scope
+function renderScope() {
+  $('#scopeName').textContent = scope || 'All maps';
+  $('#scopeBtn').classList.toggle('map', !!scope);
+  const n = scope ? (overrides[scope] || []).length : Object.keys(overrides).length;
+  $('#scopeCount').innerHTML = n ? `<span class="badge map" title="${scope ? 'Slots with their own texture on this map' : 'Maps with their own textures'}">${n} ${scope ? 'custom' : 'custom map' + (n > 1 ? 's' : '')}</span>` : '';
+}
+function renderScopeList() {
+  const f = $('#scopeSearch').value.trim().toLowerCase();
+  const row = (name, label, sub, extra = '') =>
+    `<div class="opt ${name === (scope || '') ? 'active' : ''}" data-map="${esc(name)}" role="option"><span class="n">${label}</span>${extra}<small>${sub}</small></div>`;
+  let html = f ? '' : row('', '<b>All maps</b>', 'default textures');
+  for (const grp of ['Prototype', 'Original']) {
+    const names = Object.keys(mapIndex).filter(m => mapIndex[m].group === grp && m.toLowerCase().includes(f));
+    if (!names.length) continue;
+    html += `<div class="grp">${grp === 'Prototype' ? 'Prototype maps' : 'Original maps'}</div>`;
+    html += names.map(m => {
+      const o = (overrides[m] || []).length;
+      return row(m, esc(m), `${mapIndex[m].slots.length} slots`, o ? `<span class="badge map">${o} custom</span>` : '');
+    }).join('');
+  }
+  $('#scopeList').innerHTML = html || '<div class="dim" style="padding:10px">No maps match.</div>';
+}
+async function setScope(name) {
+  scope = name || null; store.set('scope', scope || '');
+  $('#scopeBox').classList.remove('open');
+  if (trying) endTry();
+  await loadSlots(true);
+}
+$('#scopeBtn').onclick = async e => {
+  e.stopPropagation();
+  const box = $('#scopeBox');
+  if (box.classList.toggle('open')) {
+    if (!Object.keys(mapIndex).length) {
+      $('#scopeList').innerHTML = '<div class="dim" style="padding:10px">Reading maps from the game…</div>';
+      try { mapIndex = await api('/api/maps'); } catch (err) { $('#scopeList').innerHTML = `<div class="dim" style="padding:10px">${esc(err.message)}</div>`; return; }
+    }
+    $('#scopeSearch').value = ''; renderScopeList(); $('#scopeSearch').focus();
+  }
+};
+$('#scopePop').onclick = e => { e.stopPropagation(); const o = e.target.closest('.opt'); if (o) setScope(o.dataset.map); };
+$('#scopeSearch').oninput = renderScopeList;
+$('#scopeSearch').onkeydown = e => {
+  if (e.key === 'Escape') $('#scopeBox').classList.remove('open');
+  if (e.key === 'Enter') { const o = document.querySelector('#scopeList .opt'); if (o) setScope(o.dataset.map); }
+};
+document.addEventListener('click', () => $('#scopeBox').classList.remove('open'));
+
+(async () => {
+  const saved = store.get('scope');
+  if (saved) {
+    try { mapIndex = await api('/api/maps'); if (mapIndex[saved]) scope = saved; } catch (e) {}
+  }
+  await loadSlots(false); syncChips(); search(); pollJob();
+})();
+</script>
+</body>
+</html>
