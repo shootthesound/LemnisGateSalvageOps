@@ -490,7 +490,7 @@ def run_job(title, commands, on_success=None):
 
 def start_build(kind, allow_shared):
     py = ['python']
-    if kind in ('build', 'debug', 'uninstall') and game_running(max_age=0):
+    if kind in ('build', 'debug', 'uninstall', 'maps') and game_running(max_age=0):
         raise RuntimeError('Close Lemnis Gate first: the game locks the texture pak while it is running.')
     if kind == 'build':
         cmd = py + ['build.py', 'build', '--install'] + (['--allow-shared'] if allow_shared else [])
@@ -501,6 +501,8 @@ def start_build(kind, allow_shared):
                                          '--allow-shared', '--install']])
     elif kind == 'uninstall':
         run_job('Uninstall', [py + ['build.py', 'uninstall']])
+    elif kind == 'maps':
+        run_job('Build edited maps', [py + [os.path.join('mapkit', 'kit.py'), 'build', '--install']])
     elif kind == 'package':
         run_job('Package for friends', [py + ['build.py', 'package']])
     else:

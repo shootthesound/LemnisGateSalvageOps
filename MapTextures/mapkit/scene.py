@@ -12,7 +12,9 @@ from mapgeo import Reader  # noqa: E402
 # Editor/cinematic actors the kit does not recreate.
 SKIP = {'LevelScriptActor', 'LevelSequenceActor', 'CineCameraActor', 'CameraActor', 'Brush', 'DefaultPhysicsVolume',
         'LandscapeGizmoActiveActor', 'GameplayDebuggerPlayerManager', 'AbstractNavData', 'NavigationData',
-        'ParticleEventManager'}
+        'ParticleEventManager'} | {'Landscape', 'LandscapeStreamingProxy', 'InstancedFoliageActor'}
+# Not rebuilt yet (terrain and foliage): import_map warns when a map has them.
+UNSUPPORTED = ('Landscape', 'LandscapeStreamingProxy', 'InstancedFoliageActor')
 TRANSFORM = ('RelativeLocation', 'RelativeRotation', 'RelativeScale3D')
 
 
@@ -269,7 +271,9 @@ class Scene:
 
 
 def export(paks, umap):
-    return {'map': umap, 'actors': Scene(paks, umap).actors()}
+    sc = Scene(paks, umap)
+    missing = sorted({e['class'] for e in sc.pkg.exports if e['outer'] == sc.level and e['class'] in UNSUPPORTED})
+    return {'map': umap, 'actors': sc.actors(), 'not_rebuilt': missing}
 
 
 if __name__ == '__main__':

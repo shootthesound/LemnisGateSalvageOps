@@ -4,6 +4,11 @@
 #include "AssetRegistryModule.h"
 #include "Atmosphere/AtmosphericFogComponent.h"
 #include "Misc/FileHelper.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "Serialization/MemoryReader.h"
+#include "StaticMeshAttributes.h"
 #include "BSPOps.h"
 #include "Components/BrushComponent.h"
 #include "Engine/Polys.h"
@@ -267,6 +272,155 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	Atmosphere->MarkPackageDirty();
 	return true;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#else
+	return false;
+#endif
+}
+
+#if WITH_EDITOR
+static FString ReadText(FArchive& Ar)
+{
+	int32 Length = 0;
+	Ar << Length;
+	TArray<uint8> Utf8;
+	Utf8.SetNumZeroed(Length + 1);
+	Ar.Serialize(Utf8.GetData(), Length);
+	return UTF8_TO_TCHAR((const ANSICHAR*)Utf8.GetData());
+}
+#endif
+
+bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
+{
+#if WITH_EDITOR
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File))
+	{
+		return false;
+	}
+	FMemoryReader Ar(Bytes);
+	int32 NumVertices = 0;
+	Ar << NumVertices;
+	TArray<FVector> Positions, Normals;
+	TArray<FVector2D> UVs;
+	Positions.SetNumUninitialized(NumVertices);
+	Normals.SetNumUninitialized(NumVertices);
+	UVs.SetNumUninitialized(NumVertices);
+	Ar.Serialize(Positions.GetData(), NumVertices * sizeof(FVector));
+	Ar.Serialize(Normals.GetData(), NumVertices * sizeof(FVector));
+	Ar.Serialize(UVs.GetData(), NumVertices * sizeof(FVector2D));
+	int32 NumSlots = 0;
+	Ar << NumSlots;
+	TArray<FName> SlotNames;
+	TArray<FString> MaterialPaths;
+	for (int32 i = 0; i < NumSlots; ++i)
+	{
+		FString Slot = ReadText(Ar);
+		// The build matches sections to slots by name, so names must be unique.
+		if (Slot.IsEmpty() || SlotNames.Contains(FName(*Slot)))
+		{
+			Slot = FString::Printf(TEXT("%s_%d"), *Slot, i);
+		}
+		SlotNames.Add(FName(*Slot));
+		MaterialPaths.Add(ReadText(Ar));
+	}
+	int32 NumSections = 0;
+	Ar << NumSections;
+	TArray<FIntVector> Sections;  // material slot, first index, triangles
+	for (int32 i = 0; i < NumSections; ++i)
+	{
+		FIntVector S;
+		Ar << S.X << S.Y << S.Z;
+		Sections.Add(S);
+	}
+	int32 NumIndices = 0;
+	Ar << NumIndices;
+	TArray<uint32> Indices;
+	Indices.SetNumUninitialized(NumIndices);
+	Ar.Serialize(Indices.GetData(), NumIndices * sizeof(uint32));
+	if (Ar.IsError() || NumVertices == 0)
+	{
+		return false;
+	}
+
+	FMeshDescription Description;
+	FStaticMeshAttributes Attributes(Description);
+	Attributes.Register();
+	TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector> InstanceNormals = Attributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector2D> InstanceUVs = Attributes.GetVertexInstanceUVs();
+	TPolygonGroupAttributesRef<FName> GroupSlots = Attributes.GetPolygonGroupMaterialSlotNames();
+	InstanceUVs.SetNumIndices(1);
+	TArray<FVertexInstanceID> Instances;
+	for (int32 i = 0; i < NumVertices; ++i)
+	{
+		const FVertexID Vertex = Description.CreateVertex();
+		VertexPositions[Vertex] = Positions[i];
+		const FVertexInstanceID Instance = Description.CreateVertexInstance(Vertex);
+		InstanceNormals[Instance] = Normals[i];
+		InstanceUVs.Set(Instance, 0, UVs[i]);
+		Instances.Add(Instance);
+	}
+	for (const FIntVector& S : Sections)
+	{
+		if (!SlotNames.IsValidIndex(S.X))
+		{
+			continue;
+		}
+		const FPolygonGroupID Group = Description.CreatePolygonGroup();
+		GroupSlots[Group] = SlotNames[S.X];
+		for (int32 t = 0; t < S.Z; ++t)
+		{
+			const int32 First = S.Y + t * 3;
+			if (First + 2 >= Indices.Num())
+			{
+				break;
+			}
+			const uint32 A = Indices[First], B = Indices[First + 1], C = Indices[First + 2];
+			if (A == B || B == C || A == C || FMath::Max3(A, B, C) >= (uint32)NumVertices
+				|| Positions[A] == Positions[B] || Positions[B] == Positions[C] || Positions[A] == Positions[C])
+			{
+				continue;  // degenerate
+			}
+			Description.CreatePolygon(Group, TArray<FVertexInstanceID>{ Instances[A], Instances[B], Instances[C] });
+		}
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	const FString Name = FPackageName::GetShortName(PackagePath);
+	UStaticMesh* Mesh = FindObject<UStaticMesh>(Package, *Name);
+	if (!Mesh)
+	{
+		Mesh = NewObject<UStaticMesh>(Package, *Name, RF_Public | RF_Standalone);
+		FAssetRegistryModule::AssetCreated(Mesh);
+	}
+	Mesh->PreEditChange(nullptr);
+	Mesh->StaticMaterials.Empty();
+	for (int32 i = 0; i < SlotNames.Num(); ++i)
+	{
+		UMaterialInterface* Material = nullptr;
+		FString PackageName, ObjectName;
+		if (MaterialPaths[i].Split(TEXT("."), &PackageName, &ObjectName) && FPackageName::DoesPackageExist(PackageName))
+		{
+			Material = LoadObject<UMaterialInterface>(nullptr, *MaterialPaths[i]);
+		}
+		Mesh->StaticMaterials.Add(FStaticMaterial(Material, SlotNames[i], SlotNames[i]));
+	}
+	Mesh->GetSourceModels().Empty();
+	FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
+	Source.BuildSettings.bRecomputeNormals = false;
+	Source.BuildSettings.bRecomputeTangents = true;
+	Source.BuildSettings.bGenerateLightmapUVs = false;
+	Source.BuildSettings.bRemoveDegenerates = true;
+	Mesh->CreateMeshDescription(0, MoveTemp(Description));
+	Mesh->CommitMeshDescription(0);
+	Mesh->CreateBodySetup();
+	Mesh->BodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;  // so the editor can snap things onto it
+	Mesh->Build(true);
+	Mesh->PostEditChange();
+	Package->MarkPackageDirty();
+	const FString Filename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+	return UPackage::SavePackage(Package, Mesh, RF_Public | RF_Standalone, *Filename, GError, nullptr, false, true, SAVE_NoError);
 #else
 	return false;
 #endif

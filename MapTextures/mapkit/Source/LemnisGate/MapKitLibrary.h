@@ -61,6 +61,11 @@ public:
 	static bool SetAtmosphereData(UActorComponent* Fog, const FString& TransmittanceFile, const FString& IrradianceFile,
 		const FString& InscatterFile);
 
+	// Create (or replace) a static mesh at PackagePath from a file mapkit/meshes.py wrote from the game's cooked mesh.
+	// Material slots get the game's materials where the kit has them (placeholders otherwise).
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static bool ImportMesh(const FString& PackagePath, const FString& File);
+
 	// Give a volume (KillZ, blocking, ...) a box brush of the given size in cm.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static void MakeBoxBrush(AVolume* Volume, FVector Size);

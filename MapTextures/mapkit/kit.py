@@ -2,7 +2,12 @@
 
     python mapkit/kit.py setup              generate the editor project, compile its stand-in C++ module and
                                             create stand-ins for the game's gameplay Blueprints
+    python mapkit/kit.py meshes             (re)create editor copies of the game's meshes (part of setup)
+    python mapkit/kit.py library            (re)make the object library level, /Game/MapKit/ObjectLibrary
     python mapkit/kit.py import <Map>       recreate a game map (e.g. CTF_Arches) as an editable level
+        --as <Slot>                         ...saved as another map, e.g. import CTF_Box --as CTF_Fork to start a
+                                            new CTF map in CTF_Fork's place (the game's map list is fixed)
+        --gameplay-only                     ...without its geometry: objectives, spawns, lights and sky only
     python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
 
 The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
@@ -20,6 +25,8 @@ sys.path.insert(0, os.path.dirname(KIT))
 import build  # noqa: E402
 import pakfile  # noqa: E402
 import bpinfo  # noqa: E402
+import mapgeo  # noqa: E402
+import meshes  # noqa: E402
 import scene  # noqa: E402
 import verify  # noqa: E402
 
@@ -150,20 +157,71 @@ def editor_script(args, script, job, log):
 
 def setup(args):
     paks = pakfile.game_paks(args.game or build.find_game())
-    print('[1/4] Writing the Map Kit project')
+    print('[1/6] Writing the Map Kit project')
     write_project()
     copy_materials()
-    print('[2/4] Compiling the stand-in C++ module (needs Visual Studio 2019 or later with C++)')
+    print('[2/6] Compiling the stand-in C++ module (needs Visual Studio 2019 or later with C++)')
     compile_module(args.ue)
-    print('[3/4] Reading the game\'s gameplay Blueprints')
+    print('[3/6] Reading the game\'s gameplay Blueprints')
     cat = blueprint_catalog(paks)
     json.dump(cat, open(os.path.join(build.BUILD, 'mapkit_blueprints.json'), 'w'), indent=1)
     print('  %d Blueprints' % len(cat))
-    print('[4/4] Creating Blueprint stand-ins in the editor')
+    print('[4/6] Copying the game\'s meshes into the editor (the stand-ins use them)')
+    import_meshes(args, paks, cat)
+    print('[5/6] Creating Blueprint stand-ins in the editor')
+    make_stubs(args, cat)
+    print('[6/6] Laying out the object library')
+    make_library(args, paks, cat)
+    print('Done: %s' % UPROJECT)
+
+
+def make_stubs(args, cat):
     result = editor_script(args, 'make_stubs.py', {'catalog': cat}, 'mapkit_stubs.log')
     print('  %d created, %d failed%s' % (len(result['made']), len(result['failed']),
                                          ''.join('\n    %s: %s' % kv for kv in result['failed'].items())))
-    print('Done: %s' % UPROJECT)
+
+
+def make_library(args, paks=None, cat=None):
+    paks = paks or pakfile.game_paks(args.game or build.find_game())
+    cat = cat or json.load(open(os.path.join(build.BUILD, 'mapkit_blueprints.json')))
+    result = editor_script(args, 'make_library.py', {'meshes': used_meshes(paks, cat),
+                                                     'blueprints': sorted(p for p, bp in cat.items() if bp)},
+                           'mapkit_library.log')
+    print('  %d objects in %s' % (result['placed'], result['level']))
+
+
+def used_meshes(paks, cat):
+    """Static meshes the game's maps and gameplay Blueprints use."""
+    paths = set()
+    for m in game_maps(paks):
+        pkg = mapgeo.Package(pakfile.find(paks, m), pakfile.find(paks, m[:-5] + '.uexp'))
+        paths |= {pkg.import_path(-i - 1) for i, imp in enumerate(pkg.imports) if imp['class'] == 'StaticMesh'}
+    for bp in cat.values():
+        for n in (bp or {}).get('nodes', []) + (bp or {}).get('native_components', []):
+            mesh = n.get('template', {}).get('StaticMesh')
+            if isinstance(mesh, str):
+                paths.add(mesh)
+    return sorted(p for p in paths if p.startswith('/Game/'))
+
+
+def import_meshes(args, paks=None, cat=None):
+    paks = paks or pakfile.game_paks(args.game or build.find_game())
+    cat = cat or json.load(open(os.path.join(build.BUILD, 'mapkit_blueprints.json')))
+    folder = os.path.join(build.BUILD, 'mapkit_meshes')
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    jobs, unreadable = [], []
+    for i, path in enumerate(used_meshes(paks, cat)):
+        try:
+            mesh = meshes.read(paks, path)
+        except Exception as e:
+            unreadable.append('%s (%s)' % (path, e))
+            continue
+        jobs.append((path, os.path.join(folder, '%d.bin' % i)))
+        mesh.write(jobs[-1][1])
+    result = editor_script(args, 'import_meshes.py', {'meshes': jobs}, 'mapkit_meshes.log')
+    print('  %d meshes, %d failed%s' % (len(result['made']), len(result['failed']) + len(unreadable),
+                                        ''.join('\n    ' + p for p in result['failed'] + unreadable)))
 
 
 def map_path(paks, name):
@@ -185,16 +243,26 @@ def write_atmosphere(sc):
             a['atmosphere'] = files
 
 
+# Actor classes --gameplay-only drops: level geometry.
+GEOMETRY = ('/Script/Engine.StaticMeshActor', '/Script/Engine.BlockingVolume', '/Script/Engine.DecalActor')
+
+
 def import_map(args):
     paks = pakfile.game_paks(args.game or build.find_game())
     umap = map_path(paks, args.map)
-    level = '/Game/' + umap[len('LemnisGate/Content/'):-len('.umap')]
-    existing = os.path.join(PROJECT, 'Content', umap[len('LemnisGate/Content/'):])
+    target = map_path(paks, args.as_map) if args.as_map else umap
+    level = '/Game/' + target[len('LemnisGate/Content/'):-len('.umap')]
+    existing = os.path.join(PROJECT, 'Content', target[len('LemnisGate/Content/'):])
     if os.path.exists(existing):
         os.remove(existing)
     print('[1/2] Reading %s' % umap)
     sc = scene.export(paks, umap)
+    if args.gameplay_only:
+        sc['actors'] = [a for a in sc['actors'] if a['class'] not in GEOMETRY]
     print('  %d actors' % len(sc['actors']))
+    if sc['not_rebuilt'] and not args.gameplay_only:
+        print('  WARNING: this map\'s %s cannot be rebuilt yet, so the copy has no terrain/foliage. Pick a map '
+              'without them (e.g. CAP_Box, ASN_Box, CTF_Arches) or use --gameplay-only.' % ', '.join(sc['not_rebuilt']))
     write_atmosphere(sc)
     print('[2/2] Rebuilding it as %s in the editor' % level)
     result = editor_script(args, 'import_map.py', {'scene': sc, 'level': level}, 'mapkit_import.log')
@@ -209,7 +277,7 @@ def kit_levels():
     out = []
     for root, _, files in os.walk(content):
         out += [os.path.relpath(os.path.join(root, f), content).replace(os.sep, '/') for f in files if f.endswith('.umap')]
-    return sorted(out)
+    return sorted(l for l in out if not l.startswith('MapKit/'))  # the kit's own levels (object library) stay home
 
 
 def build_maps(args):
@@ -263,16 +331,18 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'import', 'build'])
+    ap.add_argument('command', choices=['setup', 'meshes', 'library', 'import', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
+    ap.add_argument('--as', dest='as_map', help='import: save as this map instead (its place in the game)')
+    ap.add_argument('--gameplay-only', action='store_true', help='import: leave out the level geometry')
     ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
     ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
     args = ap.parse_args()
     if args.command == 'import' and not args.map:
         ap.error('import needs a map name')
-    {'setup': setup, 'import': import_map, 'build': build_maps}[args.command](args)
+    {'setup': setup, 'meshes': import_meshes, 'library': make_library, 'import': import_map, 'build': build_maps}[args.command](args)
 
 
 if __name__ == '__main__':
