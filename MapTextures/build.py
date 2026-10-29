@@ -48,10 +48,24 @@ def find_maps(slot):
     return found
 
 
+def albedo_mean(path):
+    """Average linear luminance of a texture, so tinting keeps the slot's original brightness.
+    Needs Pillow; without it the default 0.5 (a mid-grey texture) is assumed."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return 0.5
+    img = Image.open(path).convert('RGB').resize((64, 64))
+    lin = lambda v: (v / 255.0) / 12.92 if v <= 10 else ((v / 255.0 + 0.055) / 1.055) ** 2.4
+    lums = [0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) for r, g, b in img.getdata()]
+    return max(sum(lums) / len(lums), 0.01)
+
+
 def slot_settings(cfg, name):
     s = dict(cfg['defaults'])
     s.update({k: cfg['slots'][name][k] for k in ('color', 'roughness', 'metallic')})
     maps = find_maps(name)
+    s['tint_mean'] = albedo_mean(maps['albedo']) if 'albedo' in maps else 0.5
     if 'orm' in maps:
         # The ORM texture supplies roughness/metallic; parameters become multipliers.
         s.update(roughness=1.0, metallic=1.0)
@@ -166,7 +180,7 @@ def make_job(cfg, enabled, defaults):
                     if p['when_slot'] in enabled and p.get('unless_slot') not in enabled]
     stubs = {path: s for path, s in cfg['stubs'].items()
              if passthroughs and s['unless_slot'] not in enabled}
-    parent_defaults = dict(cfg['defaults'], color=[0.5, 0.5, 0.5], roughness=0.5, metallic=0.0,
+    parent_defaults = dict(cfg['defaults'], color=[0.5, 0.5, 0.5], roughness=0.5, metallic=0.0, tint_mean=0.5,
                            **{k: '%s/Default/T_Default_%s' % (tex_root, k) for k in MAPS})
     return {'parent_material': cfg['parent_material'], 'parent_defaults': parent_defaults,
             'textures': textures, 'materials': materials, 'instances': instances,

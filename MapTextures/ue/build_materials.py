@@ -31,7 +31,7 @@ float4 cZ = Tex.Sample(TexSampler, uvZ);
 ALBEDO = TRIPLANAR + '''
 float3 c = cX.rgb * w.x + cY.rgb * w.y + cZ.rgb * w.z;
 float l = dot(c, float3(0.2126, 0.7152, 0.0722));
-return lerp(c, Color * l * 2.0, TintStrength);
+return lerp(c, Color * l / max(TintMean, 0.01), TintStrength);
 '''
 
 # Tangent-space (DirectX) normals per plane, rebuilt in world space from the
@@ -127,6 +127,7 @@ def build_triplanar(path, p):
     tile = scalar(mat, 'TileSize', p['tile_size'], 450)
     sharp = scalar(mat, 'BlendSharpness', p['blend_sharpness'], 550)
     tint = scalar(mat, 'TintStrength', p['tint_strength'], 650)
+    tint_mean = scalar(mat, 'TintMean', p['tint_mean'], 700)
     strength = scalar(mat, 'NormalStrength', p['normal_strength'], 750)
     rough = scalar(mat, 'Roughness', p['roughness'], 850)
     metal = scalar(mat, 'Metallic', p['metallic'], 950)
@@ -134,7 +135,7 @@ def build_triplanar(path, p):
     vn = node(mat, unreal.MaterialExpressionVertexNormalWS, -900, 1200)
 
     common = {'WP': wp, 'N': vn, 'Tile': tile, 'Sharp': sharp}
-    c_albedo = custom(mat, ALBEDO, dict(common, Tex=albedo, Color=color, TintStrength=tint), -500, 'TriplanarAlbedo')
+    c_albedo = custom(mat, ALBEDO, dict(common, Tex=albedo, Color=color, TintStrength=tint, TintMean=tint_mean), -500, 'TriplanarAlbedo')
     c_normal = custom(mat, NORMAL, dict(common, Tex=normal, Strength=strength), -100, 'TriplanarNormal')
     c_orm = custom(mat, ORM, dict(common, Tex=orm, Rough=rough, Metal=metal), 300, 'TriplanarORM')
 
@@ -197,7 +198,7 @@ def main():
         p = i['params']
         build_instance(i['asset'], JOB['parent_material'],
                        {'TileSize': p['tile_size'], 'BlendSharpness': p['blend_sharpness'],
-                        'TintStrength': p['tint_strength'], 'NormalStrength': p['normal_strength'],
+                        'TintStrength': p['tint_strength'], 'TintMean': p['tint_mean'], 'NormalStrength': p['normal_strength'],
                         'Roughness': p['roughness'], 'Metallic': p['metallic']},
                        {'Color': p['color']},
                        {'Albedo': p['albedo'], 'Normal': p['normal'], 'ORM': p['orm']})
