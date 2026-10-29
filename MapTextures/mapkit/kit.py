@@ -669,7 +669,9 @@ def write_profile(name):
     os.makedirs(BUILDER_DIR, exist_ok=True)
     path = os.path.join(BUILDER_DIR, 'profile.json')
     json.dump({'game': 'Lemnis Gate',
-               'build': [sys.executable, os.path.abspath(__file__), 'play', name]}, open(path, 'w'), indent=1)
+               'build': [sys.executable, os.path.abspath(__file__), 'play', name],
+               # Objects the game hides in a match (time-trial checkpoints): the builder can hide them too.
+               'helpers': ['CheckPoint']}, open(path, 'w'), indent=1)
     return path
 
 

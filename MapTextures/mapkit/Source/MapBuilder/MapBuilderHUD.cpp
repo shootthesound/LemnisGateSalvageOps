@@ -3,9 +3,19 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Misc/Paths.h"
 
 #include "MapBuilderController.h"
 #include "MapBuilderEdits.h"
+
+static const FLinearColor TextColor(0.95f, 0.95f, 0.95f), Dim(0.7f, 0.7f, 0.7f), Accent(1.f, 0.75f, 0.2f);
+
+static void Centered(AHUD* Hud, UCanvas* Canvas, UFont* Font, const FString& S, float X, float Y, const FLinearColor& C, float Scale)
+{
+	float W = 0.f, H = 0.f;
+	Canvas->TextSize(Font, S, W, H, Scale, Scale);
+	Hud->DrawText(S, C, X - W * 0.5f, Y - H * 0.5f, Font, Scale);
+}
 
 void AMapBuilderHUD::DrawHUD()
 {
@@ -15,35 +25,83 @@ void AMapBuilderHUD::DrawHUD()
 	{
 		return;
 	}
-	UFont* Font = GEngine->GetSmallFont();
-	const FLinearColor Text(0.95f, 0.95f, 0.95f), Dim(0.65f, 0.65f, 0.65f), Accent(1.f, 0.75f, 0.2f);
-	float Y = 16.f;
-	auto Line = [&](const FString& S, const FLinearColor& C) { DrawText(S, C, 16.f, Y, Font, 1.2f); Y += 20.f; };
+	UFont* Font = GEngine->GetMediumFont();
+	const float CX = Canvas->ClipX * 0.5f, CY = Canvas->ClipY * 0.5f;
 
-	static const TCHAR* Tools[] = { TEXT("Move"), TEXT("Rotate"), TEXT("Scale") };
+	// Top line: where you are and how things snap.
 	const UMapBuilderEdits* Edits = PC->GetEdits();
-	Line(FString::Printf(TEXT("MAP BUILDER   %s   %s   grid %s   angle snap %s   %d edits%s"),
-		*FPaths::GetBaseFilename(PC->GetLevelPath()), Tools[(int32)PC->GetTool()],
-		PC->GetGrid() > 0.f ? *FString::Printf(TEXT("%.0f"), PC->GetGrid()) : TEXT("off"), PC->IsAngleSnap() ? TEXT("on") : TEXT("off"),
-		Edits ? Edits->Count() : 0, Edits && Edits->IsDirty() ? TEXT(" (unsaved)") : TEXT("")), Accent);
-	Line(TEXT("Hold right mouse: look, WASD / Q E fly, Shift faster, wheel speed"), Dim);
-	Line(TEXT("Click: select   Ctrl+click: add   Drag handle: move/rotate/scale   Drag object: slide over surfaces"), Dim);
-	Line(TEXT("W / E / R: move / rotate / scale   G: grid   H: angle snap   End: drop to floor   F: frame"), Dim);
-	Line(TEXT("Delete   Ctrl+D duplicate   Ctrl+Z / Ctrl+Y undo / redo   Ctrl+S save   Esc: clear selection"), Dim);
-	Line(FString::Printf(TEXT("Speed %.0f"), PC->GetSpeed()), Dim);
-	if (!PC->GetStatus().IsEmpty())
+	const FString Grid = PC->GetGrid() > 0.f ? FString::Printf(TEXT("grid %.0f cm"), PC->GetGrid()) : TEXT("grid off");
+	const FString Step = FString::Printf(TEXT("rotation step %.0f"), PC->GetAngleSnap() > 0.f ? PC->GetAngleSnap() : 1.f);
+	DrawText(FString::Printf(TEXT("MAP BUILDER   %s   %s   %s   speed %.0f   %d edits%s"), *FPaths::GetBaseFilename(PC->GetLevelPath()),
+		*Grid, *Step, PC->GetSpeed(), Edits ? Edits->Count() : 0, Edits && Edits->IsDirty() ? TEXT(" (unsaved)") : TEXT("")),
+		Accent, 20.f, 16.f, Font, 1.f);
+
+	// What the buttons do right now.
+	FString Hint;
+	if (PC->GetRadialItems().Num())
 	{
-		Line(PC->GetStatus(), Accent);
+		Hint = TEXT("Right stick: point at an option");
 	}
-	Y += 6.f;
+	else if (PC->IsGrabbing())
+	{
+		Hint = FString::Printf(TEXT("A / X: place   B: put back   LB / RB: rotate (%s)   R3: turn / tilt / roll   D-pad: up/down raise, left/right size"),
+			PC->GetGrabAxisName());
+	}
+	else
+	{
+		Hint = TEXT("A: select   R3: add to selection   X: grab   Y: duplicate   B: clear   D-pad: undo / redo / speed   LB: edit   RB: settings   Menu: file");
+	}
+	DrawText(Hint, Dim, 20.f, Canvas->ClipY - 40.f, Font, 0.85f);
+
+	// Status message, for a few seconds.
+	if (!PC->GetStatus().IsEmpty() && FPlatformTime::Seconds() - PC->GetStatusTime() < 3.0)
+	{
+		Centered(this, Canvas, Font, PC->GetStatus(), CX, Canvas->ClipY - 90.f, Accent, 1.1f);
+	}
+
+	// What's selected / aimed at.
 	const TArray<AActor*> Sel = PC->GetSelectedActors();
-	for (int32 i = 0; i < Sel.Num() && i < 6; ++i)
+	float Y = 46.f;
+	for (int32 i = 0; i < Sel.Num() && i < 5; ++i, Y += 22.f)
 	{
-		Line(FString::Printf(TEXT("%s  (%s)  %s"), *Sel[i]->GetName(), *Sel[i]->GetClass()->GetName(),
-			*Sel[i]->GetActorLocation().ToCompactString()), Text);
+		DrawText(FString::Printf(TEXT("%s  (%s)"), *Sel[i]->GetName(), *Sel[i]->GetClass()->GetName()), TextColor, 20.f, Y, Font, 0.85f);
 	}
-	if (Sel.Num() > 6)
+	if (Sel.Num() > 5)
 	{
-		Line(FString::Printf(TEXT("... and %d more"), Sel.Num() - 6), Text);
+		DrawText(FString::Printf(TEXT("... and %d more"), Sel.Num() - 5), TextColor, 20.f, Y, Font, 0.85f);
+	}
+
+	// Radial menu, or the crosshair.
+	const TArray<FMapBuilderRadialItem>& Items = PC->GetRadialItems();
+	if (Items.Num())
+	{
+		const float Radius = FMath::Min(Canvas->ClipX, Canvas->ClipY) * 0.28f;
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), CX - Radius * 1.45f, CY - Radius * 1.25f, Radius * 2.9f, Radius * 2.5f);
+		Centered(this, Canvas, Font, PC->GetRadialTitle().ToUpper(), CX, CY, Accent, 1.3f);
+		for (int32 i = 0; i < Items.Num(); ++i)
+		{
+			const float Angle = FMath::DegreesToRadians(360.f * i / Items.Num());
+			const float X = CX + FMath::Sin(Angle) * Radius, Yi = CY - FMath::Cos(Angle) * Radius;
+			const bool bChosen = i == PC->GetRadialChoice();
+			if (bChosen)
+			{
+				float W = 0.f, H = 0.f;
+				Canvas->TextSize(Font, Items[i].Label, W, H, 1.2f, 1.2f);
+				DrawRect(FLinearColor(1.f, 0.75f, 0.2f, 0.35f), X - W * 0.5f - 12.f, Yi - H * 0.5f - 6.f, W + 24.f, H + 12.f);
+			}
+			Centered(this, Canvas, Font, Items[i].Label, X, Yi, bChosen ? FLinearColor::White : TextColor, bChosen ? 1.2f : 1.f);
+		}
+	}
+	else
+	{
+		const FLinearColor C = PC->IsGrabbing() ? Accent : (PC->GetTarget() ? FLinearColor::White : Dim);
+		DrawLine(CX - 10.f, CY, CX - 3.f, CY, C, 2.f);
+		DrawLine(CX + 3.f, CY, CX + 10.f, CY, C, 2.f);
+		DrawLine(CX, CY - 10.f, CX, CY - 3.f, C, 2.f);
+		DrawLine(CX, CY + 3.f, CX, CY + 10.f, C, 2.f);
+		if (const AActor* T = PC->GetTarget())
+		{
+			Centered(this, Canvas, Font, T->GetName(), CX, CY + 28.f, Dim, 0.8f);
+		}
 	}
 }

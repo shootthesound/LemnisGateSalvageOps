@@ -2,10 +2,11 @@
 
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "HAL/PlatformProcess.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -15,19 +16,24 @@
 #include "MapBuilderEdits.h"
 #include "MapBuilderPawn.h"
 
-static const FColor AxisColors[3] = { FColor(235, 60, 60), FColor(80, 220, 80), FColor(70, 120, 255) };
-static const FColor Highlight(255, 190, 40);
+static const FColor SelectedColor(255, 190, 40);
+static const FColor TargetColor(200, 200, 200);
+static const float DeadZone = 0.2f;
+static const float LookSpeed = 140.f;  // degrees per second at full stick
+
+static TArray<FString> HelperClasses;  // from the game profile: objects the game hides in a match (shown here)
 
 AMapBuilderController::AMapBuilderController()
 {
-	bShowMouseCursor = true;
+	bShowMouseCursor = false;
 }
 
 void AMapBuilderController::BeginPlay()
 {
 	Super::BeginPlay();
 	Edits = NewObject<UMapBuilderEdits>(this);
-	StopLooking();  // cursor mode
+	SetInputMode(FInputModeGameOnly());
+	ConsoleCommand(TEXT("r.MotionBlurQuality 0"));  // a building tool wants a sharp picture while moving
 
 	FString Camera;
 	if (FParse::Value(FCommandLine::Get(), TEXT("MapBuilderCamera="), Camera, false))
@@ -48,6 +54,7 @@ void AMapBuilderController::BeginPlay()
 		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ProfileText), Profile) && Profile.IsValid())
 		{
 			Profile->TryGetStringArrayField(TEXT("build"), BuildCommand);
+			Profile->TryGetStringArrayField(TEXT("helpers"), HelperClasses);
 		}
 	}
 	if (FParse::Value(FCommandLine::Get(), TEXT("MapBuilderTest="), SelfTestFolder, false))
@@ -60,50 +67,99 @@ void AMapBuilderController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 	UInputComponent* In = InputComponent;
-	In->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &AMapBuilderController::StartLooking);
-	In->BindKey(EKeys::RightMouseButton, IE_Released, this, &AMapBuilderController::StopLooking);
-	In->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AMapBuilderController::LeftDown);
-	In->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AMapBuilderController::LeftUp);
-	In->BindKey(EKeys::W, IE_Pressed, this, &AMapBuilderController::MoveTool);
-	In->BindKey(EKeys::E, IE_Pressed, this, &AMapBuilderController::RotateTool);
-	In->BindKey(EKeys::R, IE_Pressed, this, &AMapBuilderController::ScaleTool);
-	In->BindKey(EKeys::G, IE_Pressed, this, &AMapBuilderController::CycleGrid);
-	In->BindKey(EKeys::H, IE_Pressed, this, &AMapBuilderController::ToggleAngleSnap);
-	In->BindKey(EKeys::Delete, IE_Pressed, this, &AMapBuilderController::DeleteSelection);
-	In->BindKey(EKeys::D, IE_Pressed, this, &AMapBuilderController::DuplicateSelection);
-	In->BindKey(EKeys::Z, IE_Pressed, this, &AMapBuilderController::UndoEdit);
-	In->BindKey(EKeys::Y, IE_Pressed, this, &AMapBuilderController::RedoEdit);
-	In->BindKey(EKeys::End, IE_Pressed, this, &AMapBuilderController::DropToFloor);
-	In->BindKey(EKeys::S, IE_Pressed, this, &AMapBuilderController::SaveKey);
-	In->BindKey(EKeys::B, IE_Pressed, this, &AMapBuilderController::BuildAndPlay);
-	In->BindKey(EKeys::F, IE_Pressed, this, &AMapBuilderController::FrameSelection);
-	In->BindKey(EKeys::Escape, IE_Pressed, this, &AMapBuilderController::ClearSelection);
-	In->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &AMapBuilderController::SpeedUp);
-	In->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &AMapBuilderController::SlowDown);
+	In->BindKey(EKeys::Gamepad_FaceButton_Bottom, IE_Pressed, this, &AMapBuilderController::PressA);
+	In->BindKey(EKeys::Gamepad_FaceButton_Right, IE_Pressed, this, &AMapBuilderController::PressB);
+	In->BindKey(EKeys::Gamepad_FaceButton_Left, IE_Pressed, this, &AMapBuilderController::PressX);
+	In->BindKey(EKeys::Gamepad_FaceButton_Top, IE_Pressed, this, &AMapBuilderController::PressY);
+	In->BindKey(EKeys::Gamepad_RightThumbstick, IE_Pressed, this, &AMapBuilderController::PressRightStick);
+	In->BindKey(EKeys::Gamepad_DPad_Left, IE_Pressed, this, &AMapBuilderController::PressDPadLeft);
+	In->BindKey(EKeys::Gamepad_DPad_Right, IE_Pressed, this, &AMapBuilderController::PressDPadRight);
+	In->BindKey(EKeys::Gamepad_DPad_Up, IE_Pressed, this, &AMapBuilderController::PressDPadUp);
+	In->BindKey(EKeys::Gamepad_DPad_Down, IE_Pressed, this, &AMapBuilderController::PressDPadDown);
+	In->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &AMapBuilderController::PressLB);
+	In->BindKey(EKeys::Gamepad_LeftShoulder, IE_Released, this, &AMapBuilderController::ReleaseLB);
+	In->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &AMapBuilderController::PressRB);
+	In->BindKey(EKeys::Gamepad_RightShoulder, IE_Released, this, &AMapBuilderController::ReleaseRB);
+	In->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this, &AMapBuilderController::PressMenu);
+	In->BindKey(EKeys::Gamepad_Special_Right, IE_Released, this, &AMapBuilderController::ReleaseMenu);
 }
 
 void AMapBuilderController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
-	if (bLooking)
+	if (RadialItems.Num())
 	{
-		float X = 0.f, Y = 0.f;
-		GetInputMouseDelta(X, Y);
-		AddYawInput(X);
-		AddPitchInput(-Y);
-		Fly(DeltaTime);
+		// The right stick picks an option; flying still works.
+		const FVector2D S(Stick(EKeys::Gamepad_RightX), Stick(EKeys::Gamepad_RightY));
+		if (S.Size() > 0.5f)
+		{
+			// Option 0 at the top, going clockwise.
+			const float Angle = FMath::Fmod(FMath::RadiansToDegrees(FMath::Atan2(S.X, S.Y)) + 360.f, 360.f);
+			const float Slice = 360.f / RadialItems.Num();
+			RadialChoice = FMath::FloorToInt(FMath::Fmod(Angle + Slice * 0.5f, 360.f) / Slice) % RadialItems.Num();
+		}
 	}
-	if (DragHandle >= 0)
+	else
 	{
-		Drag();
+		Look(DeltaTime);
 	}
-	DrawSelection();
-	DrawHandles();
+	Fly(DeltaTime);
+	if (bGrabbing)
+	{
+		UpdateGrab();
+	}
+	else
+	{
+		UpdateTarget();
+	}
+	Draw();
 }
 
-bool AMapBuilderController::Ctrl() const
+float AMapBuilderController::Stick(const FKey& Key) const
 {
-	return IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	const float V = GetInputAnalogKeyState(Key);
+	return FMath::Abs(V) < DeadZone ? 0.f : (V - FMath::Sign(V) * DeadZone) / (1.f - DeadZone);
+}
+
+void AMapBuilderController::Look(float DeltaTime)
+{
+	const float X = Stick(EKeys::Gamepad_RightX), Y = Stick(EKeys::Gamepad_RightY);
+	// A gentle curve: precise near the centre, fast at the edge.
+	FRotator R = GetControlRotation();
+	R.Yaw += X * FMath::Abs(X) * LookSpeed * DeltaTime;
+	R.Pitch = FMath::ClampAngle(R.Pitch + Y * FMath::Abs(Y) * LookSpeed * 0.8f * DeltaTime, -89.f, 89.f);
+	SetControlRotation(R);
+}
+
+void AMapBuilderController::Fly(float DeltaTime)
+{
+	APawn* P = GetPawn();
+	if (!P)
+	{
+		return;
+	}
+	const FRotationMatrix View(GetControlRotation());
+	const float Boost = IsInputKeyDown(EKeys::Gamepad_LeftThumbstick) ? 3.f : 1.f;
+	P->AddMovementInput(View.GetUnitAxis(EAxis::X), Stick(EKeys::Gamepad_LeftY) * Boost);
+	P->AddMovementInput(View.GetUnitAxis(EAxis::Y), Stick(EKeys::Gamepad_LeftX) * Boost);
+	auto Trigger = [this](const FKey& Key) { const float V = GetInputAnalogKeyState(Key); return V < 0.15f ? 0.f : V; };
+	const float Vertical = Trigger(EKeys::Gamepad_RightTriggerAxis) - Trigger(EKeys::Gamepad_LeftTriggerAxis);
+	P->AddMovementInput(FVector::UpVector, Vertical * Boost);
+}
+
+float AMapBuilderController::GetSpeed() const
+{
+	const AMapBuilderPawn* P = Cast<AMapBuilderPawn>(GetPawn());
+	return P ? P->GetSpeed() : 0.f;
+}
+
+void AMapBuilderController::ChangeSpeed(float Factor)
+{
+	if (AMapBuilderPawn* P = Cast<AMapBuilderPawn>(GetPawn()))
+	{
+		P->ScaleSpeed(Factor);
+		SetStatus(FString::Printf(TEXT("Speed %.0f"), P->GetSpeed()));
+	}
 }
 
 void AMapBuilderController::SetStatus(const FString& Text)
@@ -122,85 +178,53 @@ FString AMapBuilderController::GetEditsFile() const
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MapBuilder"), FPaths::GetBaseFilename(GetLevelPath()) + TEXT(".edits.json"));
 }
 
-// ---------------------------------------------------------------- camera
+// ---------------------------------------------------------------- aiming and selection
 
-void AMapBuilderController::StartLooking()
+FVector AMapBuilderController::Aim(FVector* OutOrigin) const
 {
-	if (DragHandle >= 0)
+	FVector Loc;
+	FRotator Rot;
+	GetPlayerViewPoint(Loc, Rot);
+	if (OutOrigin)
 	{
-		return;
+		*OutOrigin = Loc;
 	}
-	bLooking = true;
-	bShowMouseCursor = false;
-	SetInputMode(FInputModeGameOnly());
+	return Rot.Vector();
 }
 
-void AMapBuilderController::StopLooking()
+AActor* AMapBuilderController::Trace(const TArray<AActor*>& Ignore, FHitResult* OutHit) const
 {
-	bLooking = false;
-	bShowMouseCursor = true;
-	FInputModeGameAndUI Mode;
-	Mode.SetHideCursorDuringCapture(false);
-	Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	SetInputMode(Mode);
+	FVector Origin;
+	const FVector Dir = Aim(&Origin);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(MapBuilderAim), true, GetPawn());
+	Params.AddIgnoredActors(Ignore);
+	FHitResult Hit;
+	if (!GetWorld()->LineTraceSingleByChannel(Hit, Origin, Origin + Dir * 200000.f, ECC_Visibility, Params))
+	{
+		return nullptr;
+	}
+	if (OutHit)
+	{
+		*OutHit = Hit;
+	}
+	return Hit.GetActor();
 }
 
-void AMapBuilderController::Fly(float DeltaTime)
+bool AMapBuilderController::CanSelect(const AActor* Actor) const
 {
-	APawn* P = GetPawn();
-	if (!P)
+	if (!Actor || Actor == GetPawn() || Actor->IsA<AWorldSettings>() || UMapBuilderEdits::IsDeleted(Actor))
 	{
-		return;
+		return false;
 	}
-	const FRotationMatrix View(GetControlRotation());
-	const float Boost = IsInputKeyDown(EKeys::LeftShift) ? 3.f : 1.f;
-	auto Axis = [this](FKey Plus, FKey Minus) { return (IsInputKeyDown(Plus) ? 1.f : 0.f) - (IsInputKeyDown(Minus) ? 1.f : 0.f); };
-	P->AddMovementInput(View.GetUnitAxis(EAxis::X), Axis(EKeys::W, EKeys::S) * Boost);
-	P->AddMovementInput(View.GetUnitAxis(EAxis::Y), Axis(EKeys::D, EKeys::A) * Boost);
-	P->AddMovementInput(FVector::UpVector, Axis(EKeys::E, EKeys::Q) * Boost);
+	// The ground is edited with terrain tools, not selected as an object.
+	return !Actor->GetClass()->GetName().Contains(TEXT("Landscape"));
 }
 
-float AMapBuilderController::GetSpeed() const
+void AMapBuilderController::UpdateTarget()
 {
-	const AMapBuilderPawn* P = Cast<AMapBuilderPawn>(GetPawn());
-	return P ? P->GetSpeed() : 0.f;
+	AActor* Hit = Trace({});
+	Target = CanSelect(Hit) ? Hit : nullptr;
 }
-
-void AMapBuilderController::SpeedUp()
-{
-	if (AMapBuilderPawn* P = Cast<AMapBuilderPawn>(GetPawn()))
-	{
-		P->ScaleSpeed(1.25f);
-	}
-}
-
-void AMapBuilderController::SlowDown()
-{
-	if (AMapBuilderPawn* P = Cast<AMapBuilderPawn>(GetPawn()))
-	{
-		P->ScaleSpeed(0.8f);
-	}
-}
-
-void AMapBuilderController::FrameSelection()
-{
-	if (bLooking)
-	{
-		return;
-	}
-	FBox Bounds(ForceInit);
-	for (AActor* A : GetSelectedActors())
-	{
-		Bounds += A->GetComponentsBoundingBox(true);
-	}
-	if (Bounds.IsValid && GetPawn())
-	{
-		const float Distance = FMath::Max(300.f, Bounds.GetExtent().Size() * 2.5f);
-		GetPawn()->SetActorLocation(Bounds.GetCenter() - GetControlRotation().Vector() * Distance);
-	}
-}
-
-// ---------------------------------------------------------------- selection
 
 TArray<AActor*> AMapBuilderController::GetSelectedActors() const
 {
@@ -215,350 +239,428 @@ TArray<AActor*> AMapBuilderController::GetSelectedActors() const
 	return Out;
 }
 
-bool AMapBuilderController::CanSelect(const AActor* Actor) const
+void AMapBuilderController::Select(bool bToggle)
 {
-	if (!Actor || Actor == GetPawn() || Actor->IsA<AWorldSettings>() || UMapBuilderEdits::IsDeleted(Actor))
-	{
-		return false;
-	}
-	// The ground is edited with terrain tools, not selected as an object.
-	return !Actor->GetClass()->GetName().Contains(TEXT("Landscape"));
-}
-
-static AActor* PickAt(APlayerController* PC, FVector2D ScreenPosition, const TArray<AActor*>& Ignore, FHitResult* OutHit = nullptr)
-{
-	FVector Origin, Direction;
-	if (!PC->DeprojectScreenPositionToWorld(ScreenPosition.X, ScreenPosition.Y, Origin, Direction))
-	{
-		return nullptr;
-	}
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(MapBuilderPick), true, PC->GetPawn());
-	Params.AddIgnoredActors(Ignore);
-	FHitResult Hit;
-	if (!PC->GetWorld()->LineTraceSingleByChannel(Hit, Origin, Origin + Direction * 200000.f, ECC_Visibility, Params))
-	{
-		return nullptr;
-	}
-	if (OutHit)
-	{
-		*OutHit = Hit;
-	}
-	return Hit.GetActor();
-}
-
-AActor* AMapBuilderController::SelectAt(FVector2D ScreenPosition, bool bAdd)
-{
-	AActor* Picked = PickAt(this, ScreenPosition, {});
-	if (!bAdd)
+	AActor* T = Target.Get();
+	if (!bToggle)
 	{
 		Selection.Reset();
 	}
-	if (!CanSelect(Picked))
+	if (T)
 	{
-		return nullptr;
+		if (bToggle && Selection.Contains(T))
+		{
+			Selection.Remove(T);
+		}
+		else
+		{
+			Selection.AddUnique(T);
+		}
 	}
-	if (bAdd && Selection.Contains(Picked))
-	{
-		Selection.Remove(Picked);  // Ctrl+click toggles
-		return nullptr;
-	}
-	Selection.AddUnique(Picked);
-	return Picked;
 }
 
 void AMapBuilderController::ClearSelection()
 {
-	if (!bLooking)
+	Selection.Reset();
+}
+
+// ---------------------------------------------------------------- buttons
+
+void AMapBuilderController::PressA()
+{
+	if (RadialItems.Num())
 	{
-		Selection.Reset();
+		if (bRadialSticky)
+		{
+			CloseRadial(true);
+		}
+		return;
+	}
+	if (bGrabbing)
+	{
+		Place();
+	}
+	else
+	{
+		Select(false);
 	}
 }
 
-// ---------------------------------------------------------------- handles and dragging
+void AMapBuilderController::PressB()
+{
+	if (RadialItems.Num())
+	{
+		CloseRadial(false);
+	}
+	else if (bGrabbing)
+	{
+		CancelGrab();
+	}
+	else
+	{
+		ClearSelection();
+	}
+}
 
-FVector AMapBuilderController::Pivot() const
+void AMapBuilderController::PressX()
+{
+	if (RadialItems.Num())
+	{
+		return;
+	}
+	if (bGrabbing)
+	{
+		Place();
+	}
+	else
+	{
+		if (!GetSelectedActors().Num())
+		{
+			Select(false);  // grab what's under the crosshair
+		}
+		Grab();
+	}
+}
+
+void AMapBuilderController::PressY()
+{
+	if (!RadialItems.Num() && !bGrabbing)
+	{
+		Duplicate();
+	}
+}
+
+void AMapBuilderController::PressRightStick()
+{
+	if (bGrabbing)
+	{
+		GrabAxis = (GrabAxis + 1) % 3;
+		SetStatus(FString::Printf(TEXT("Rotating: %s"), GetGrabAxisName()));
+	}
+	else if (!RadialItems.Num())
+	{
+		Select(true);
+	}
+}
+
+const TCHAR* AMapBuilderController::GetGrabAxisName() const
+{
+	static const TCHAR* Names[] = { TEXT("turn"), TEXT("tilt"), TEXT("roll") };
+	return Names[GrabAxis];
+}
+
+void AMapBuilderController::Rotate(float Sign)
+{
+	// World up for turning; the camera's right and forward (flattened) for tilting and rolling, so it rotates the way
+	// you're looking at it.
+	const FRotator View(0.f, GetControlRotation().Yaw, 0.f);
+	const FVector Axis = GrabAxis == 0 ? FVector::UpVector : GrabAxis == 1 ? FRotationMatrix(View).GetUnitAxis(EAxis::Y)
+	                                                                       : FRotationMatrix(View).GetUnitAxis(EAxis::X);
+	const float Step = AngleSnap > 0.f ? AngleSnap : 1.f;
+	GrabTurn = FQuat(Axis, FMath::DegreesToRadians(Sign * Step)) * GrabTurn;
+}
+
+void AMapBuilderController::PressDPadLeft()
+{
+	if (bGrabbing)
+	{
+		GrabScale = FMath::Max(0.05f, GrabScale / 1.1f);
+	}
+	else if (!RadialItems.Num())
+	{
+		Undo();
+	}
+}
+
+void AMapBuilderController::PressDPadRight()
+{
+	if (bGrabbing)
+	{
+		GrabScale *= 1.1f;
+	}
+	else if (!RadialItems.Num())
+	{
+		Redo();
+	}
+}
+
+void AMapBuilderController::PressDPadUp()
+{
+	if (bGrabbing)
+	{
+		GrabLift += Grid > 0.f ? Grid : 25.f;
+	}
+	else if (!RadialItems.Num())
+	{
+		ChangeSpeed(1.5f);
+	}
+}
+
+void AMapBuilderController::PressDPadDown()
+{
+	if (bGrabbing)
+	{
+		GrabLift -= Grid > 0.f ? Grid : 25.f;
+	}
+	else if (!RadialItems.Num())
+	{
+		ChangeSpeed(1.f / 1.5f);
+	}
+}
+
+void AMapBuilderController::PressLB()
+{
+	if (bGrabbing)
+	{
+		Rotate(-1.f);
+	}
+	else if (!RadialItems.Num())
+	{
+		EditMenu();
+	}
+}
+
+void AMapBuilderController::ReleaseLB()
+{
+	if (RadialTitle == TEXT("Edit"))
+	{
+		CloseRadial(true);
+	}
+}
+
+void AMapBuilderController::PressRB()
+{
+	if (bGrabbing)
+	{
+		Rotate(1.f);
+	}
+	else if (!RadialItems.Num())
+	{
+		SettingsMenu();
+	}
+}
+
+void AMapBuilderController::ReleaseRB()
+{
+	if (RadialTitle == TEXT("Settings"))
+	{
+		CloseRadial(true);
+	}
+}
+
+void AMapBuilderController::PressMenu()
+{
+	if (!RadialItems.Num() && !bGrabbing)
+	{
+		FileMenu();
+	}
+}
+
+void AMapBuilderController::ReleaseMenu()
+{
+	if (RadialTitle == TEXT("File"))
+	{
+		CloseRadial(true);
+	}
+}
+
+// ---------------------------------------------------------------- radial menus
+
+void AMapBuilderController::OpenRadial(const FString& Title, TArray<FMapBuilderRadialItem> Items, bool bSticky)
+{
+	RadialTitle = Title;
+	RadialItems = MoveTemp(Items);
+	RadialChoice = -1;
+	bRadialSticky = bSticky;
+}
+
+void AMapBuilderController::CloseRadial(bool bChoose)
+{
+	TFunction<void()> Action;
+	if (bChoose && RadialItems.IsValidIndex(RadialChoice))
+	{
+		Action = RadialItems[RadialChoice].Action;
+	}
+	RadialTitle.Reset();
+	RadialItems.Reset();
+	RadialChoice = -1;
+	bRadialSticky = false;
+	if (Action)
+	{
+		Action();
+	}
+}
+
+void AMapBuilderController::EditMenu()
+{
+	OpenRadial(TEXT("Edit"), {
+		{ TEXT("Duplicate"), [this] { Duplicate(); } },
+		{ TEXT("Drop to floor"), [this] { DropToFloor(); } },
+		{ TEXT("Redo"), [this] { Redo(); } },
+		{ TEXT("Reset scale"), [this] { ResetScale(); } },
+		{ TEXT("Delete"), [this] { Delete(); } },
+		{ TEXT("Reset rotation"), [this] { ResetRotation(); } },
+		{ TEXT("Undo"), [this] { Undo(); } },
+		{ TEXT("Frame selection"), [this] { Frame(); } },
+	});
+}
+
+void AMapBuilderController::SettingsMenu()
+{
+	OpenRadial(TEXT("Settings"), {
+		{ TEXT("Grid size..."), [this] { GridMenu(); } },
+		{ TEXT("Rotation step..."), [this] { RotationStepMenu(); } },
+		{ TEXT("Faster flying"), [this] { ChangeSpeed(1.5f); } },
+		{ bHelpersHidden ? TEXT("Show helpers") : TEXT("Hide helpers"), [this] { ToggleHelpers(); } },
+		{ TEXT("Slower flying"), [this] { ChangeSpeed(1.f / 1.5f); } },
+	});
+}
+
+void AMapBuilderController::GridMenu()
+{
+	TArray<FMapBuilderRadialItem> Items;
+	for (float G : { 0.f, 1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 250.f })
+	{
+		Items.Add({ G > 0.f ? FString::Printf(TEXT("%.0f cm%s"), G, G == Grid ? TEXT("  *") : TEXT(""))
+		                    : FString(Grid == 0.f ? TEXT("Off  *") : TEXT("Off")),
+		            [this, G] { Grid = G; SetStatus(G > 0.f ? FString::Printf(TEXT("Grid %.0f cm"), G) : TEXT("Grid off")); } });
+	}
+	OpenRadial(TEXT("Grid size"), MoveTemp(Items), true);
+}
+
+void AMapBuilderController::RotationStepMenu()
+{
+	TArray<FMapBuilderRadialItem> Items;
+	for (float A : { 0.f, 1.f, 5.f, 15.f, 45.f, 90.f })
+	{
+		Items.Add({ A > 0.f ? FString::Printf(TEXT("%.0f degrees%s"), A, A == AngleSnap ? TEXT("  *") : TEXT(""))
+		                    : FString(AngleSnap == 0.f ? TEXT("Free (1 degree)  *") : TEXT("Free (1 degree)")),
+		            [this, A] { AngleSnap = A; SetStatus(A > 0.f ? FString::Printf(TEXT("Rotation step %.0f degrees"), A) : TEXT("Rotation step 1 degree")); } });
+	}
+	OpenRadial(TEXT("Rotation step"), MoveTemp(Items), true);
+}
+
+void AMapBuilderController::FileMenu()
+{
+	OpenRadial(TEXT("File"), {
+		{ TEXT("Save"), [this] { Save(); } },
+		{ TEXT("Build and play"), [this] { BuildAndPlay(); } },
+		{ TEXT("Quit (unsaved edits are lost)"), [this] { ConsoleCommand(TEXT("quit")); } },
+	});
+}
+
+// ---------------------------------------------------------------- grabbing
+
+void AMapBuilderController::Grab()
 {
 	const TArray<AActor*> Actors = GetSelectedActors();
+	if (!Actors.Num())
+	{
+		SetStatus(TEXT("Nothing to grab: aim at something and press X"));
+		return;
+	}
+	Edits->BeginTransform(Actors);  // also makes them movable
+	GrabStart.Reset();
+	FBox Bounds(ForceInit);
 	FVector Sum = FVector::ZeroVector;
 	for (AActor* A : Actors)
 	{
+		GrabStart.Add(A->GetActorTransform());
+		Bounds += A->GetComponentsBoundingBox(true);
 		Sum += A->GetActorLocation();
 	}
-	return Actors.Num() ? Sum / Actors.Num() : FVector::ZeroVector;
+	GrabPivot = Sum / Actors.Num();
+	GrabBase = GrabPivot.Z - Bounds.Min.Z;
+	FVector Origin;
+	Aim(&Origin);
+	GrabDistance = FVector::Dist(Origin, GrabPivot);
+	GrabTurn = FQuat::Identity;
+	GrabLift = 0.f;
+	GrabScale = 1.f;
+	bGrabbing = true;
 }
 
-float AMapBuilderController::HandleLength() const
+void AMapBuilderController::UpdateGrab()
 {
-	FVector CamLoc;
-	FRotator CamRot;
-	GetPlayerViewPoint(CamLoc, CamRot);
-	return FMath::Max(20.f, FVector::Dist(CamLoc, Pivot()) * 0.12f);
-}
-
-static float DistanceToSegment(const FVector2D& P, const FVector2D& A, const FVector2D& B)
-{
-	const FVector2D AB = B - A;
-	const float T = FMath::Clamp(FVector2D::DotProduct(P - A, AB) / FMath::Max(AB.SizeSquared(), 1.f), 0.f, 1.f);
-	return FVector2D::Distance(P, A + AB * T);
-}
-
-int32 AMapBuilderController::HandleUnderMouse() const
-{
-	if (!GetSelectedActors().Num())
-	{
-		return -1;
-	}
-	float MX = 0.f, MY = 0.f;
-	if (!GetMousePosition(MX, MY))
-	{
-		return -1;
-	}
-	const FVector2D Mouse(MX, MY);
-	const FVector P = Pivot();
-	FVector2D P0;
-	if (!ProjectWorldLocationToScreen(P, P0))
-	{
-		return -1;
-	}
-	if (FVector2D::Distance(Mouse, P0) < 12.f)
-	{
-		return 3;
-	}
-	const float Len = HandleLength();
-	int32 Best = -1;
-	float BestDistance = 10.f;
-	for (int32 Axis = 0; Axis < 3; ++Axis)
-	{
-		FVector2D P1;
-		if (ProjectWorldLocationToScreen(P + FVector(Axis == 0, Axis == 1, Axis == 2) * Len, P1))
-		{
-			const float D = DistanceToSegment(Mouse, P0, P1);
-			if (D < BestDistance)
-			{
-				BestDistance = D;
-				Best = Axis;
-			}
-		}
-	}
-	return Best;
-}
-
-void AMapBuilderController::LeftDown()
-{
-	if (bLooking)
-	{
-		return;
-	}
-	float MX = 0.f, MY = 0.f;
-	GetMousePosition(MX, MY);
-	const FVector2D Mouse(MX, MY);
-	int32 Handle = Ctrl() ? -1 : HandleUnderMouse();
-	if (Handle < 0)
-	{
-		AActor* Hit = PickAt(this, Mouse, {});
-		if (Hit && !Ctrl() && Selection.Contains(Hit))
-		{
-			Handle = 4;  // drag the selected object itself over surfaces
-		}
-		else
-		{
-			SelectAt(Mouse, Ctrl());
-			return;
-		}
-	}
 	const TArray<AActor*> Actors = GetSelectedActors();
-	DragHandle = Handle;
-	DragStartMouse = Mouse;
-	DragPivot = Pivot();
-	DragStart.Reset();
-	for (AActor* A : Actors)
+	if (Actors.Num() != GrabStart.Num())
 	{
-		DragStart.Add(A->GetActorTransform());
-	}
-	Edits->BeginTransform(Actors);
-}
-
-void AMapBuilderController::LeftUp()
-{
-	if (DragHandle >= 0)
-	{
-		DragHandle = -1;
-		Edits->EndTransform();
-	}
-}
-
-void AMapBuilderController::Drag()
-{
-	float MX = 0.f, MY = 0.f;
-	GetMousePosition(MX, MY);
-	const FVector2D Mouse(MX, MY), Delta = Mouse - DragStartMouse;
-	const TArray<AActor*> Actors = GetSelectedActors();
-	if (Actors.Num() != DragStart.Num() || (DragHandle == 4 && Delta.Size() < 3.f))
-	{
+		CancelGrab();
 		return;
 	}
-	const float Len = HandleLength();
-
-	if (DragHandle == 4)
+	// Stand on what the crosshair points at, or hang in the air at the distance it was grabbed from.
+	FHitResult Hit;
+	FVector Pivot;
+	if (Trace(Actors, &Hit) && FVector::Dist(Hit.ImpactPoint, Hit.TraceStart) < GrabDistance * 4.f + 2000.f)
 	{
-		// Slide: keep the pivot's height above the selection's base, standing on whatever is under the cursor.
-		FBox Bounds(ForceInit);
-		for (int32 i = 0; i < Actors.Num(); ++i)
-		{
-			Bounds += Actors[i]->GetComponentsBoundingBox(true).ShiftBy(DragStart[i].GetLocation() - Actors[i]->GetActorLocation());
-		}
-		FHitResult Hit;
-		if (!PickAt(this, Mouse, Actors, &Hit))
-		{
-			return;
-		}
-		FVector Target = Hit.ImpactPoint + FVector(0, 0, DragPivot.Z - Bounds.Min.Z);
-		if (Grid > 0.f)
-		{
-			Target.X = FMath::GridSnap(Target.X, Grid);
-			Target.Y = FMath::GridSnap(Target.Y, Grid);
-		}
-		const FVector Move = Target - DragPivot;
-		for (int32 i = 0; i < Actors.Num(); ++i)
-		{
-			Actors[i]->SetActorLocation(DragStart[i].GetLocation() + Move);
-		}
-		return;
+		Pivot = Hit.ImpactPoint + FVector(0, 0, GrabBase * GrabScale);
 	}
-
-	// Along a handle: how far the mouse moved along the handle's direction on screen, in world units.
-	const FVector Axis = DragHandle < 3 ? FVector(DragHandle == 0, DragHandle == 1, DragHandle == 2) : FVector::UpVector;
-	FVector2D P0, P1;
-	ProjectWorldLocationToScreen(DragPivot, P0);
-	ProjectWorldLocationToScreen(DragPivot + Axis * Len, P1);
-	const FVector2D ScreenAxis = P1 - P0;
-	const float Pixels = FMath::Max(ScreenAxis.Size(), 1.f);
-	const float Along = FVector2D::DotProduct(Delta, ScreenAxis / Pixels) / Pixels * Len;
-
+	else
+	{
+		FVector Origin;
+		const FVector Dir = Aim(&Origin);
+		Pivot = Origin + Dir * GrabDistance;
+	}
+	if (Grid > 0.f)
+	{
+		Pivot.X = FMath::GridSnap(Pivot.X, Grid);
+		Pivot.Y = FMath::GridSnap(Pivot.Y, Grid);
+	}
+	Pivot.Z += GrabLift;
+	const FQuat& Turn = GrabTurn;
 	for (int32 i = 0; i < Actors.Num(); ++i)
 	{
-		FTransform T = DragStart[i];
-		switch (Tool)
-		{
-		case EMapBuilderTool::Move:
-		{
-			if (DragHandle == 3)
-			{
-				break;
-			}
-			const float Distance = Grid > 0.f ? FMath::GridSnap(Along, Grid) : Along;
-			T.SetLocation(T.GetLocation() + Axis * Distance);
-			break;
-		}
-		case EMapBuilderTool::Rotate:
-		{
-			if (DragHandle == 3)
-			{
-				break;
-			}
-			float Degrees = (Delta.X - Delta.Y) * 0.5f;
-			if (bAngleSnap)
-			{
-				Degrees = FMath::GridSnap(Degrees, 15.f);
-			}
-			const FQuat Turn(Axis, FMath::DegreesToRadians(Degrees));
-			T.SetLocation(DragPivot + Turn.RotateVector(T.GetLocation() - DragPivot));
-			T.SetRotation(Turn * T.GetRotation());
-			break;
-		}
-		case EMapBuilderTool::Scale:
-		{
-			const float Factor = DragHandle == 3 ? FMath::Max(0.05f, 1.f + (Delta.X - Delta.Y) * 0.005f)
-			                                      : FMath::Max(0.05f, 1.f + Along / Len);
-			FVector S = T.GetScale3D();
-			if (DragHandle == 3)
-			{
-				S *= Factor;
-			}
-			else
-			{
-				S[DragHandle] *= Factor;
-			}
-			T.SetScale3D(S);
-			break;
-		}
-		}
+		const FTransform& S = GrabStart[i];
+		FTransform T;
+		T.SetLocation(Pivot + Turn.RotateVector((S.GetLocation() - GrabPivot) * GrabScale));
+		T.SetRotation(Turn * S.GetRotation());
+		T.SetScale3D(S.GetScale3D() * GrabScale);
 		Actors[i]->SetActorTransform(T);
 	}
 }
 
-void AMapBuilderController::DrawSelection() const
+void AMapBuilderController::Place()
 {
-	for (AActor* A : GetSelectedActors())
-	{
-		const FBox Box = A->GetComponentsBoundingBox(true);
-		DrawDebugBox(GetWorld(), Box.GetCenter(), Box.GetExtent(), Highlight, false, -1.f, SDPG_Foreground, 1.5f);
-	}
+	bGrabbing = false;
+	Edits->EndTransform();
+	SetStatus(TEXT("Placed"));
 }
 
-void AMapBuilderController::DrawHandles() const
-{
-	if (!GetSelectedActors().Num())
-	{
-		return;
-	}
-	const FVector P = Pivot();
-	const float Len = HandleLength();
-	const int32 Hot = DragHandle >= 0 ? DragHandle : (bLooking ? -1 : HandleUnderMouse());
-	for (int32 Axis = 0; Axis < 3; ++Axis)
-	{
-		const FVector End = P + FVector(Axis == 0, Axis == 1, Axis == 2) * Len;
-		const FColor C = Hot == Axis ? FColor::Yellow : AxisColors[Axis];
-		switch (Tool)
-		{
-		case EMapBuilderTool::Move:
-			DrawDebugDirectionalArrow(GetWorld(), P, End, Len * 0.25f, C, false, -1.f, SDPG_Foreground, Len * 0.025f);
-			break;
-		case EMapBuilderTool::Rotate:
-			DrawDebugCircle(GetWorld(), P, Len * 0.8f, 32, C, false, -1.f, SDPG_Foreground, Len * 0.02f,
-				FVector(Axis == 1, Axis == 2, Axis == 0), FVector(Axis == 2, Axis == 0, Axis == 1), false);
-			DrawDebugLine(GetWorld(), P, End, C, false, -1.f, SDPG_Foreground, Len * 0.02f);
-			break;
-		case EMapBuilderTool::Scale:
-			DrawDebugLine(GetWorld(), P, End, C, false, -1.f, SDPG_Foreground, Len * 0.025f);
-			DrawDebugSolidBox(GetWorld(), End, FVector(Len * 0.05f), C, false, -1.f, SDPG_Foreground);
-			break;
-		}
-	}
-	DrawDebugSolidBox(GetWorld(), P, FVector(Len * 0.04f), Hot == 3 ? FColor::Yellow : FColor::White, false, -1.f, SDPG_Foreground);
-}
-
-// ---------------------------------------------------------------- edit commands
-
-void AMapBuilderController::CycleGrid()
-{
-	if (bLooking)
-	{
-		return;
-	}
-	static const float Steps[] = { 0.f, 10.f, 25.f, 50.f, 100.f, 250.f };
-	int32 i = 0;
-	while (i < UE_ARRAY_COUNT(Steps) && Steps[i] != Grid)
-	{
-		++i;
-	}
-	Grid = Steps[(i + 1) % UE_ARRAY_COUNT(Steps)];
-	SetStatus(Grid > 0.f ? FString::Printf(TEXT("Grid %.0f cm"), Grid) : TEXT("Grid off"));
-}
-
-void AMapBuilderController::ToggleAngleSnap()
-{
-	if (!bLooking)
-	{
-		bAngleSnap = !bAngleSnap;
-		SetStatus(bAngleSnap ? TEXT("Angle snap 15 degrees") : TEXT("Angle snap off"));
-	}
-}
-
-void AMapBuilderController::DeleteSelection()
+void AMapBuilderController::CancelGrab()
 {
 	const TArray<AActor*> Actors = GetSelectedActors();
-	if (!bLooking && Actors.Num())
+	for (int32 i = 0; i < Actors.Num() && i < GrabStart.Num(); ++i)
+	{
+		Actors[i]->SetActorTransform(GrabStart[i]);
+	}
+	bGrabbing = false;
+	Edits->EndTransform();  // unchanged, so nothing is recorded
+	SetStatus(TEXT("Put back"));
+}
+
+// ---------------------------------------------------------------- actions
+
+void AMapBuilderController::Duplicate()
+{
+	const TArray<AActor*> Actors = GetSelectedActors();
+	if (!Actors.Num())
+	{
+		SetStatus(TEXT("Select something to duplicate"));
+		return;
+	}
+	const TArray<AActor*> Copies = Edits->Duplicate(Actors, FVector::ZeroVector);
+	Selection.Reset();
+	for (AActor* A : Copies)
+	{
+		Selection.Add(A);
+	}
+	Grab();  // straight into your hands, to put down where you want it
+}
+
+void AMapBuilderController::Delete()
+{
+	const TArray<AActor*> Actors = GetSelectedActors();
+	if (Actors.Num())
 	{
 		Edits->Delete(Actors);
 		Selection.Reset();
@@ -566,46 +668,10 @@ void AMapBuilderController::DeleteSelection()
 	}
 }
 
-void AMapBuilderController::DuplicateSelection()
-{
-	if (bLooking || !Ctrl())
-	{
-		return;
-	}
-	const TArray<AActor*> Actors = GetSelectedActors();
-	if (!Actors.Num())
-	{
-		return;
-	}
-	const TArray<AActor*> Copies = Edits->Duplicate(Actors, FVector(Grid > 0.f ? Grid * 2.f : 100.f, 0.f, 0.f));
-	Selection.Reset();
-	for (AActor* A : Copies)
-	{
-		Selection.Add(A);
-	}
-	SetStatus(FString::Printf(TEXT("Duplicated %d"), Copies.Num()));
-}
-
-void AMapBuilderController::UndoEdit()
-{
-	if (!bLooking && Ctrl())
-	{
-		SetStatus(Edits->Undo() ? TEXT("Undo") : TEXT("Nothing to undo"));
-	}
-}
-
-void AMapBuilderController::RedoEdit()
-{
-	if (!bLooking && Ctrl())
-	{
-		SetStatus(Edits->Redo() ? TEXT("Redo") : TEXT("Nothing to redo"));
-	}
-}
-
 void AMapBuilderController::DropToFloor()
 {
 	const TArray<AActor*> Actors = GetSelectedActors();
-	if (bLooking || !Actors.Num())
+	if (!Actors.Num())
 	{
 		return;
 	}
@@ -626,27 +692,78 @@ void AMapBuilderController::DropToFloor()
 	SetStatus(TEXT("Dropped to floor"));
 }
 
+void AMapBuilderController::ResetRotation()
+{
+	const TArray<AActor*> Actors = GetSelectedActors();
+	Edits->BeginTransform(Actors);
+	for (AActor* A : Actors)
+	{
+		A->SetActorRotation(FRotator::ZeroRotator);
+	}
+	Edits->EndTransform();
+}
+
+void AMapBuilderController::ResetScale()
+{
+	const TArray<AActor*> Actors = GetSelectedActors();
+	Edits->BeginTransform(Actors);
+	for (AActor* A : Actors)
+	{
+		A->SetActorScale3D(FVector::OneVector);
+	}
+	Edits->EndTransform();
+}
+
+void AMapBuilderController::Undo()
+{
+	SetStatus(Edits->Undo() ? TEXT("Undo") : TEXT("Nothing to undo"));
+}
+
+void AMapBuilderController::Redo()
+{
+	SetStatus(Edits->Redo() ? TEXT("Redo") : TEXT("Nothing to redo"));
+}
+
+void AMapBuilderController::Frame()
+{
+	FBox Bounds(ForceInit);
+	for (AActor* A : GetSelectedActors())
+	{
+		Bounds += A->GetComponentsBoundingBox(true);
+	}
+	if (Bounds.IsValid && GetPawn())
+	{
+		const float Distance = FMath::Max(300.f, Bounds.GetExtent().Size() * 2.5f);
+		GetPawn()->SetActorLocation(Bounds.GetCenter() - GetControlRotation().Vector() * Distance);
+	}
+}
+
+void AMapBuilderController::ToggleHelpers()
+{
+	bHelpersHidden = !bHelpersHidden;
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		const FString Class = It->GetClass()->GetName();
+		if (HelperClasses.ContainsByPredicate([&](const FString& H) { return Class.Contains(H); }) && !UMapBuilderEdits::IsDeleted(*It))
+		{
+			It->SetActorHiddenInGame(bHelpersHidden);
+			It->SetActorEnableCollision(!bHelpersHidden);
+			++Count;
+		}
+	}
+	SetStatus(FString::Printf(TEXT("%s %d helpers"), bHelpersHidden ? TEXT("Hid") : TEXT("Showing"), Count));
+}
+
 bool AMapBuilderController::Save()
 {
 	const bool bOk = Edits->Save(GetEditsFile(), GetLevelPath());
-	SetStatus(bOk ? FString::Printf(TEXT("Saved %s"), *GetEditsFile()) : TEXT("Could not save"));
+	SetStatus(bOk ? TEXT("Saved") : TEXT("Could not save"));
 	return bOk;
-}
-
-void AMapBuilderController::SaveKey()
-{
-	if (!bLooking && Ctrl())
-	{
-		Save();
-	}
 }
 
 void AMapBuilderController::BuildAndPlay()
 {
-	if (bLooking || !Ctrl())
-	{
-		return;
-	}
 	if (BuildCommand.Num() == 0)
 	{
 		SetStatus(TEXT("This game's profile has no build command"));
@@ -668,7 +785,26 @@ void AMapBuilderController::BuildAndPlay()
 		SetStatus(TEXT("Could not start the build"));
 		return;
 	}
-	ConsoleCommand(TEXT("quit"));
+	ConsoleCommand(TEXT("quit"));  // the level it opened is about to change
+}
+
+// ---------------------------------------------------------------- drawing
+
+void AMapBuilderController::Draw() const
+{
+	for (AActor* A : GetSelectedActors())
+	{
+		const FBox Box = A->GetComponentsBoundingBox(true);
+		DrawDebugBox(GetWorld(), Box.GetCenter(), Box.GetExtent(), SelectedColor, false, -1.f, SDPG_Foreground, bGrabbing ? 3.f : 1.5f);
+	}
+	if (AActor* T = Target.Get())
+	{
+		if (!bGrabbing && !GetSelectedActors().Contains(T))
+		{
+			const FBox Box = T->GetComponentsBoundingBox(true);
+			DrawDebugBox(GetWorld(), Box.GetCenter(), Box.GetExtent(), TargetColor, false, -1.f, SDPG_Foreground, 0.75f);
+		}
+	}
 }
 
 // ---------------------------------------------------------------- self-test
@@ -676,34 +812,24 @@ void AMapBuilderController::BuildAndPlay()
 void AMapBuilderController::RunSelfTest()
 {
 	// Give streaming and shaders a moment, then select, edit, shoot and report.
-	GetWorldTimerManager().SetTimer(SelfTestTimer, this, &AMapBuilderController::SelfTestSelect, 8.f, false);
-}
-
-void AMapBuilderController::SelfTestSelect()
-{
-	int32 W = 0, H = 0;
-	GetViewportSize(W, H);
-	SelectAt(FVector2D(W * 0.5f, H * 0.5f), false);
-	GetWorldTimerManager().SetTimer(SelfTestTimer, this, &AMapBuilderController::SelfTestEdit, 1.f, false);
+	GetWorldTimerManager().SetTimer(SelfTestTimer, this, &AMapBuilderController::SelfTestEdit, 8.f, false);
 }
 
 void AMapBuilderController::SelfTestEdit()
 {
-	// Lift the selection 300 cm, copy it 400 cm along X, undo and redo the copy, delete nothing, save.
-	const TArray<AActor*> Actors = GetSelectedActors();
-	if (Actors.Num())
-	{
-		Edits->BeginTransform(Actors);
-		for (AActor* A : Actors)
-		{
-			A->AddActorWorldOffset(FVector(0, 0, 300));
-		}
-		Edits->EndTransform();
-		Edits->Duplicate(Actors, FVector(400, 0, 0));
-		Edits->Undo();
-		Edits->Redo();
-	}
+	// As a player would: A on what's under the crosshair, X to grab, rotate twice (RB RB), lift (D-pad up), place.
+	UpdateTarget();
+	PressA();
+	PressX();
+	PressRB();
+	PressRB();
+	PressDPadUp();
+	UpdateGrab();
+	PressX();
 	Edits->Save(FPaths::Combine(SelfTestFolder, TEXT("builder.edits.json")), GetLevelPath());
+	// Then open the Edit menu with the stick pointing at Duplicate, for the screenshot.
+	PressLB();
+	RadialChoice = 0;
 	GetWorldTimerManager().SetTimer(SelfTestTimer, this, &AMapBuilderController::SelfTestShot, 1.f, false);
 }
 
@@ -723,14 +849,20 @@ void AMapBuilderController::SelfTestReport()
 		Item->SetStringField(TEXT("name"), A->GetName());
 		Item->SetStringField(TEXT("class"), A->GetClass()->GetPathName());
 		Item->SetStringField(TEXT("location"), A->GetActorLocation().ToString());
+		Item->SetStringField(TEXT("rotation"), A->GetActorRotation().ToString());
 		Selected.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Report->SetArrayField(TEXT("selection"), Selected);
 	Report->SetStringField(TEXT("level"), GetLevelPath());
-	if (GetPawn())
+	Report->SetStringField(TEXT("radial"), RadialTitle);
+	// Raw controller input, to tell drift from a connected pad apart from no pad at all.
+	TSharedRef<FJsonObject> Input = MakeShared<FJsonObject>();
+	for (const FKey& K : { EKeys::Gamepad_LeftX, EKeys::Gamepad_LeftY, EKeys::Gamepad_RightX, EKeys::Gamepad_RightY,
+	                       EKeys::Gamepad_LeftTriggerAxis, EKeys::Gamepad_RightTriggerAxis })
 	{
-		Report->SetStringField(TEXT("camera"), GetPawn()->GetActorLocation().ToString());
+		Input->SetNumberField(K.ToString(), GetInputAnalogKeyState(K));
 	}
+	Report->SetObjectField(TEXT("input"), Input);
 	FString Text;
 	FJsonSerializer::Serialize(Report, TJsonWriterFactory<>::Create(&Text));
 	FFileHelper::SaveStringToFile(Text, *FPaths::Combine(SelfTestFolder, TEXT("builder.json")));
