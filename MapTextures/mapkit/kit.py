@@ -8,6 +8,11 @@
         --as <Slot>                         ...saved as another map, e.g. import CTF_Box --as CTF_Fork to start a
                                             new CTF map in CTF_Fork's place (the game's map list is fixed)
         --gameplay-only                     ...without its geometry: objectives, spawns, lights and sky only
+    python mapkit/kit.py new <Name> --from <Map> [--mode CAP] [--title "MY MAP"] [--gameplay-only]
+                                            a new map of your own, added to the game's map list (any mode)
+    python mapkit/kit.py mode <Map> <Mode>  play a map (yours or the game's) in another mode: CTF, CAP, DM, DST,
+                                            EVA or ASN
+    python mapkit/kit.py list               your maps and mode changes
     python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
 
 The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
@@ -16,6 +21,7 @@ path, so only the map files go into the pak and the game supplies the real Bluep
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +32,7 @@ import build  # noqa: E402
 import pakfile  # noqa: E402
 import bpinfo  # noqa: E402
 import mapgeo  # noqa: E402
+import maplist  # noqa: E402
 import meshes  # noqa: E402
 import scene  # noqa: E402
 import verify  # noqa: E402
@@ -251,8 +258,11 @@ def import_map(args):
     paks = pakfile.game_paks(args.game or build.find_game())
     umap = map_path(paks, args.map)
     target = map_path(paks, args.as_map) if args.as_map else umap
-    level = '/Game/' + target[len('LemnisGate/Content/'):-len('.umap')]
-    existing = os.path.join(PROJECT, 'Content', target[len('LemnisGate/Content/'):])
+    rebuild(args, paks, umap, '/Game/' + target[len('LemnisGate/Content/'):-len('.umap')])
+
+
+def rebuild(args, paks, umap, level):
+    existing = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '.umap')
     if os.path.exists(existing):
         os.remove(existing)
     print('[1/2] Reading %s' % umap)
@@ -269,6 +279,127 @@ def import_map(args):
     print('  %d actors placed, %d failed, %d placeholder assets; world settings %s%s' % (
         result['spawned'], len(result['failed']), len(result['placeholders']), result['world_settings'],
         ''.join('\n    %s: %s' % kv for kv in result['failed'].items())))
+
+
+# ---------------------------------------------------------------- your maps and the game's map list
+
+REGISTRY = os.path.join(PROJECT, 'maps.json')
+
+
+def registry():
+    """{'maps': {Name: {title, mode, template, slot}}, 'modes': {GameMap: mode}}"""
+    if os.path.exists(REGISTRY):
+        return json.load(open(REGISTRY))
+    return {'maps': {}, 'modes': {}}
+
+
+def save_registry(reg):
+    json.dump(reg, open(REGISTRY, 'w'), indent=1)
+
+
+def mode_name(mode):
+    """CAP or Capture -> Capture"""
+    full = maplist.MODES.get(mode.upper(), mode)
+    if full not in maplist.MODES.values():
+        sys.exit('Unknown mode %s: use one of %s' % (mode, ', '.join(maplist.MODES)))
+    return full
+
+
+def free_slots(paks, ml):
+    """Maps the game registered but doesn't list (CAP_Box, EV_Urban, ...), as /Game paths. The menu only offers maps
+    the game registered when it was built, so a new map is saved in one of these, under its own name and mode."""
+    listed = {ml.entry(k).get('level', '').split('/')[-1].split('.')[0].lower() for k in range(ml.count)}
+    return ['/Game/' + m[len('LemnisGate/Content/'):-5] for m in game_maps(paks)
+            if m.rsplit('/', 1)[1][:-5].lower() not in listed and '/Levels/Playable/' in m]
+
+
+def custom_level_file(m):
+    return os.path.join(PROJECT, 'Content', m['slot'][len('/Game/'):] + '.umap')
+
+
+def template_entry(ml, source):
+    """The map-list entry a new map copies (thumbnail, music, flags): the source map's, or for maps the game doesn't
+    list (the *_Box maps) a P2P-menu map of the same mode."""
+    try:
+        return ml.find(source)
+    except KeyError:
+        prefix = source.split('_')[0].upper()
+        mode = maplist.MODES.get(prefix, maplist.MODES.get(prefix[:3]))
+        for k in range(ml.count):
+            e = ml.entry(k)
+            if e.get('flags') == 1 and e.get('mode') == mode:
+                return k
+        return next(k for k in range(ml.count) if ml.entry(k).get('flags') == 1)
+
+
+def new_map(args):
+    if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', args.map):
+        sys.exit('Map names are letters, digits and _ (e.g. SO_Warehouse); use --title for the name shown in game.')
+    if not args.source:
+        sys.exit('Say which map to start from: --from <Map> (e.g. --from CAP_Box)')
+    paks = pakfile.game_paks(args.game or build.find_game())
+    source = map_path(paks, args.source)
+    ml = maplist.MapList(paks)
+    template = template_entry(ml, args.source)
+    reg = registry()
+    slot = reg['maps'].get(args.map, {}).get('slot')
+    if not slot:
+        taken = {m['slot'] for m in reg['maps'].values()}
+        free = [f for f in free_slots(paks, ml) if f not in taken]
+        if not free:
+            sys.exit('All %d free map slots are used. Delete a map from %s, or replace one of the game\'s maps with '
+                     '"import <Map>".' % (len(taken), REGISTRY))
+        slot = free[0]
+    reg['maps'][args.map] = {'title': args.title or args.map.replace('_', ' ').upper(),
+                             'mode': mode_name(args.mode) if args.mode else ml.entry(template)['mode'],
+                             'template': args.source, 'slot': slot}
+    save_registry(reg)
+    rebuild(args, paks, source, slot)
+    m = reg['maps'][args.map]
+    print('%s: "%s", %s, saved as %s. Build to add it to the game\'s map list.' % (
+        args.map, m['title'], m['mode'], slot))
+
+
+def set_mode(args):
+    if not args.mode_arg:
+        sys.exit('Usage: kit.py mode <Map> <Mode>')
+    reg = registry()
+    mode = mode_name(args.mode_arg)
+    if args.map in reg['maps']:
+        reg['maps'][args.map]['mode'] = mode
+    else:
+        maplist.MapList(pakfile.game_paks(args.game or build.find_game())).find(args.map)  # must be listed
+        reg['modes'][args.map] = mode
+    save_registry(reg)
+    print('%s now plays as %s (after the next build). Its objectives should suit the mode.' % (args.map, mode))
+
+
+def list_maps(args):
+    reg = registry()
+    for name, m in sorted(reg['maps'].items()):
+        missing = '' if os.path.exists(custom_level_file(m)) else '  [level missing]'
+        print('%-20s "%s"  %s  (from %s, level %s)%s' % (name, m['title'], m['mode'], m['template'], m['slot'],
+                                                         missing))
+    for name, mode in sorted(reg['modes'].items()):
+        print('%-20s plays as %s' % (name, mode))
+    if not reg['maps'] and not reg['modes']:
+        print('No maps of your own yet: python mapkit/kit.py new <Name> --from <Map>')
+
+
+def game_instance(paks):
+    """The game's map list with your maps added and mode changes applied, as (header, body); None if unchanged."""
+    reg = registry()
+    if not reg['maps'] and not reg['modes']:
+        return None
+    ml = maplist.MapList(paks)
+    for game_map, mode in reg['modes'].items():
+        ml.set_mode(ml.find(game_map), mode)
+    extra = []
+    for name, m in sorted(reg['maps'].items()):
+        if os.path.exists(custom_level_file(m)):
+            level = '%s.%s' % (m['slot'], m['slot'].rsplit('/', 1)[1])
+            extra.append(ml.new_entry(template_entry(ml, m['template']), level, m['title'], m['mode']))
+    return ml.write(extra)
 
 
 def kit_levels():
@@ -308,7 +439,14 @@ def build_maps(args):
         sys.exit('Not packed: those references would be missing in-game (pass --force to pack anyway).')
     print('[3/3] Packing the map files only (the game supplies everything they reference)')
     resp = os.path.join(build.BUILD, 'mapkit_pak_files.txt')
+    listed = game_instance(paks)
     with open(resp, 'w') as f:
+        if listed:
+            # The game's map list, with your maps in it.
+            for data, ext in zip(listed, ('.uasset', '.uexp')):
+                src = os.path.join(build.BUILD, 'ConvergenceGameInstanceBP' + ext)
+                open(src, 'wb').write(data)
+                f.write('"%s" "../../../%s%s"\n' % (src, maplist.ASSET, ext))
         for l in levels:
             base = os.path.join(cooked, 'LemnisGate', 'Content', l[:-5].replace('/', os.sep))
             files = [base + ext for ext in ('.umap', '.uexp', '.ubulk') if os.path.exists(base + ext)]
@@ -331,18 +469,23 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'meshes', 'library', 'import', 'build'])
+    ap.add_argument('command', choices=['setup', 'meshes', 'library', 'import', 'new', 'mode', 'list', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
+    ap.add_argument('mode_arg', nargs='?', help='mode: the mode to play the map in')
+    ap.add_argument('--from', dest='source', help='new: the map to start from')
+    ap.add_argument('--mode', help='new: game mode (CTF, CAP, DM, DST, EVA, ASN; default: the source map\'s)')
+    ap.add_argument('--title', help='new: the name shown in game')
     ap.add_argument('--as', dest='as_map', help='import: save as this map instead (its place in the game)')
     ap.add_argument('--gameplay-only', action='store_true', help='import: leave out the level geometry')
     ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
     ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
     args = ap.parse_args()
-    if args.command == 'import' and not args.map:
-        ap.error('import needs a map name')
-    {'setup': setup, 'meshes': import_meshes, 'library': make_library, 'import': import_map, 'build': build_maps}[args.command](args)
+    if args.command in ('import', 'new', 'mode') and not args.map:
+        ap.error('%s needs a map name' % args.command)
+    {'setup': setup, 'meshes': import_meshes, 'library': make_library, 'import': import_map, 'new': new_map,
+     'mode': set_mode, 'list': list_maps, 'build': build_maps}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -30,14 +30,24 @@ Run it again after a game update.
 
 ## Make a map
 
-The game's map list is fixed, so an edited map replaces one of the game's maps. Its name decides the game mode: CTF,
-CAP (capture), DM, DST (destroy), EVA (evac), ASN (assassination).
+Modes: CTF, CAP (capture), DM, DST (destroy), EVA (evac), ASN (assassination). A map's mode comes from the game's
+map list, not its name.
 
 1. **Start from a map.** Use one of these:
-   - Edit an existing map: `python mapkit/kit.py import CTF_Arches`
-   - Start a new layout in another map's place: `python mapkit/kit.py import CAP_Box --as CAP_Crescent`. The game's
-     `*_Box` maps are the simplest working setup for each mode.
-   - Keep only a map's objectives, spawns, lights and sky: add `--gameplay-only`.
+   - **A new map of your own:** `python mapkit/kit.py new SO_Yard --from CAP_Box --title "CAP_SalvageYard (Custom)"`.
+     - It's added to the P2P map list under that title. Add `--mode CTF` (or another mode) to play it in a different
+       mode from the map you started from.
+     - The game's `*_Box` maps are the simplest working setup for each mode.
+     - The game only offers maps it registered when it was built. New maps are therefore saved in one of 20 slots: the
+       game's registered maps that its menu never lists (ASN_Bases, CAP_Box, EV_Urban and others). This gives you up
+       to 20 maps of your own.
+   - **Edit one of the game's maps:** `python mapkit/kit.py import CTF_Arches`.
+   - **Replace a listed map with another layout:** `python mapkit/kit.py import CAP_Box --as CAP_Crescent`.
+   - **Keep only the gameplay:** add `--gameplay-only` to `new` or `import` to keep a map's objectives, spawns, lights
+     and sky, without its geometry.
+   - **Change a map's mode:** `python mapkit/kit.py mode CTF_Fork CAP` plays a map (yours or the game's) in another
+     mode. Its objectives need to suit the mode: capture points for CAP, flags and gate pods for CTF.
+   - **See your maps:** `python mapkit/kit.py list`. They're stored in `_build/MapKit/maps.json`.
 2. **Edit.**
    - Open `_build/MapKit/LemnisGate.uproject` (double-click, or open it from the launcher).
    - Open your level under `Content/Levels/...` and edit it.
