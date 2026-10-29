@@ -1,0 +1,279 @@
+"""Lemnis Gate Map Kit: edit the game's maps in the Unreal 4.26 editor.
+
+    python mapkit/kit.py setup              generate the editor project, compile its stand-in C++ module and
+                                            create stand-ins for the game's gameplay Blueprints
+    python mapkit/kit.py import <Map>       recreate a game map (e.g. CTF_Arches) as an editable level
+    python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
+
+The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
+path, so only the map files go into the pak and the game supplies the real Blueprints, meshes and materials.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+KIT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(KIT))
+import build  # noqa: E402
+import pakfile  # noqa: E402
+import bpinfo  # noqa: E402
+import scene  # noqa: E402
+import verify  # noqa: E402
+
+PROJECT = os.path.join(build.BUILD, 'MapKit')
+UPROJECT = os.path.join(PROJECT, 'LemnisGate.uproject')
+LOGS = os.path.join(build.BUILD, 'logs')
+COMMON = ['-unattended', '-nosplash', '-nop4', '-utf8output']
+
+
+def run(cmd, log, env=None):
+    os.makedirs(LOGS, exist_ok=True)
+    build.run(cmd, os.path.join(LOGS, log), env)
+
+
+def write_project():
+    os.makedirs(os.path.join(PROJECT, 'Config'), exist_ok=True)
+    os.makedirs(os.path.join(PROJECT, 'Content'), exist_ok=True)
+    src = os.path.join(PROJECT, 'Source')
+    shutil.rmtree(src, ignore_errors=True)
+    # Fresh timestamps, or UnrealHeaderTool may judge its generated code up to date and miss new functions.
+    shutil.copytree(os.path.join(KIT, 'Source'), src, copy_function=shutil.copy)
+    json.dump({'FileVersion': 3, 'EngineAssociation': '4.26', 'Category': '', 'Description': '',
+               'Modules': [{'Name': 'LemnisGate', 'Type': 'Runtime', 'LoadingPhase': 'Default'}],
+               'Plugins': [{'Name': 'PythonScriptPlugin', 'Enabled': True},
+                           {'Name': 'EditorScriptingUtilities', 'Enabled': True}]},
+              open(UPROJECT, 'w'), indent=1)
+    game_ini = os.path.join(build.REPO, 'PakContent', 'LemnisGate', 'Config', 'DefaultEngine.ini')
+    open(os.path.join(PROJECT, 'Config', 'DefaultEngine.ini'), 'w').write(
+        build.ini_section(game_ini, '/Script/Engine.RendererSettings') +
+        '\n\n[/Script/Engine.Engine]\nWorldSettingsClassName=/Script/LemnisGate.ConvergenceWorldSettings\n'
+        '\n[/Script/WindowsTargetPlatform.WindowsTargetSettings]\n-TargetedRHIs=PCD3D_SM4\n+TargetedRHIs=PCD3D_SM5\n')
+    open(os.path.join(PROJECT, 'Config', 'DefaultGame.ini'), 'w').write(
+        '[/Script/EngineSettings.GeneralProjectSettings]\nProjectName=LemnisGate\n\n'
+        '[/Script/UnrealEd.ProjectPackagingSettings]\nbShareMaterialShaderCode=False\n'
+        'bSharedMaterialNativeLibraries=False\nUsePakFile=True\n')
+
+
+def compile_module(ue):
+    bat = os.path.join(ue, 'Engine', 'Build', 'BatchFiles', 'Build.bat')
+    run([bat, 'LemnisGateEditor', 'Win64', 'Development', '-Project=' + UPROJECT, '-WaitMutex', '-NoHotReload'],
+        'mapkit_compile.log')
+
+
+def game_maps(paks):
+    files = sorted({f for p in paks for f in p.files})
+    return [f for f in files if f.endswith('.umap') and '/Levels/Menu/' not in f]
+
+
+def blueprint_catalog(paks):
+    """Every gameplay Blueprint the game's maps place (plus their parents and component Blueprints), with the
+    variables maps set on them: float/int/bool values and references to the actor's own components, plus the
+    component events the level binds to the Blueprint's functions."""
+    roots, variables, links, values, placed, events = set(), {}, {}, {}, {}, {}
+    for m in game_maps(paks):
+        sc = scene.Scene(paks, m)
+        pkg = sc.pkg
+        bp_classes = {}
+        for imp in pkg.imports:
+            if imp['class'] == 'BlueprintGeneratedClass':
+                package = pkg.imports[-imp['outer'] - 1]['name']
+                if package.startswith('/Game/'):
+                    roots.add(package)
+                    bp_classes[imp['name']] = package
+        for i, e in enumerate(pkg.exports, 1):
+            if e['class'] in bp_classes:
+                props = sc.tagged(i)
+                placed[bp_classes[e['class']]] = placed.get(bp_classes[e['class']], 0) + 1
+                found = variables.setdefault(bp_classes[e['class']], {})
+                for name, (ptype, _) in props.items():
+                    if ptype in VARIABLE_TYPES:
+                        found[name] = VARIABLE_TYPES[ptype]
+                for name, (component, cls) in sc.component_refs(i, props).items():
+                    if cls:
+                        found[name] = 'object:' + cls
+                        links.setdefault(bp_classes[e['class']], {})[name] = component
+                for prop, functions in sc.events(i, i).items():
+                    events.setdefault(bp_classes[e['class']], {})[prop] = ','.join(functions)
+                for j, c in enumerate(pkg.exports, 1):
+                    if c['outer'] == i:
+                        for prop, text in sc.construction_values(j).items():
+                            key = '%s.%s' % (c['name'], prop)
+                            values.setdefault(bp_classes[e['class']], {}).setdefault(key, []).append(text)
+                        for prop, functions in sc.events(j, i).items():
+                            events.setdefault(bp_classes[e['class']], {})['%s.%s' % (c['name'], prop)] = ','.join(functions)
+    cat = bpinfo.catalog(paks, sorted(roots))
+    for path, bp in cat.items():
+        if bp:
+            bp['variables'] = variables.get(path, {})
+            bp['links'] = links.get(path, {})
+            bp['events'] = events.get(path, {})
+            # Values every placed copy agrees on become the Blueprint's; the rest are set per actor on import.
+            bp['construction_values'] = {k: v[0] for k, v in values.get(path, {}).items()
+                                         if len(set(v)) == 1 and len(v) == placed.get(path)}
+    return cat
+
+
+VARIABLE_TYPES = {'FloatProperty': 'float', 'IntProperty': 'int', 'BoolProperty': 'bool'}
+
+
+def copy_materials():
+    """The texture project's built materials, so the slots look textured in the editor."""
+    src = os.path.join(build.PROJECT, 'Content')
+    if not os.path.isdir(src):
+        print('  (no built textures yet - slots will be untextured in the editor)')
+        return
+    shutil.copytree(src, os.path.join(PROJECT, 'Content'), dirs_exist_ok=True)
+
+
+def editor_script(args, script, job, log):
+    editor, _ = build.engine_tools(args.ue)
+    job['result_file'] = os.path.join(build.BUILD, 'mapkit_result.json')
+    job_file = os.path.join(build.BUILD, 'mapkit_job.json')
+    json.dump(job, open(job_file, 'w'), indent=1)
+    if os.path.exists(job['result_file']):
+        os.remove(job['result_file'])
+    # The commandlet exits non-zero on any logged error (e.g. one Blueprint failing to compile), so the result file
+    # the script writes decides success.
+    print('  > %s  (log: %s)' % (script, os.path.join(LOGS, log)))
+    os.makedirs(LOGS, exist_ok=True)
+    with open(os.path.join(LOGS, log), 'w', encoding='utf-8', errors='replace') as f:
+        subprocess.call([editor, UPROJECT, '-run=pythonscript', '-script=' + os.path.join(KIT, 'ue', script)] + COMMON,
+                        stdout=f, stderr=subprocess.STDOUT, env=dict(os.environ, MAPKIT_JOB=job_file))
+    result = json.load(open(job['result_file'])) if os.path.exists(job['result_file']) else {}
+    if not result.get('ok'):
+        sys.exit('%s failed:\n%s\nLog: %s' % (script, result.get('error', 'no result written'), os.path.join(LOGS, log)))
+    return result
+
+
+def setup(args):
+    paks = pakfile.game_paks(args.game or build.find_game())
+    print('[1/4] Writing the Map Kit project')
+    write_project()
+    copy_materials()
+    print('[2/4] Compiling the stand-in C++ module (needs Visual Studio 2019 or later with C++)')
+    compile_module(args.ue)
+    print('[3/4] Reading the game\'s gameplay Blueprints')
+    cat = blueprint_catalog(paks)
+    json.dump(cat, open(os.path.join(build.BUILD, 'mapkit_blueprints.json'), 'w'), indent=1)
+    print('  %d Blueprints' % len(cat))
+    print('[4/4] Creating Blueprint stand-ins in the editor')
+    result = editor_script(args, 'make_stubs.py', {'catalog': cat}, 'mapkit_stubs.log')
+    print('  %d created, %d failed%s' % (len(result['made']), len(result['failed']),
+                                         ''.join('\n    %s: %s' % kv for kv in result['failed'].items())))
+    print('Done: %s' % UPROJECT)
+
+
+def map_path(paks, name):
+    """CTF_Arches -> LemnisGate/Content/Levels/Playable/CTF_Arches.umap"""
+    found = [m for m in game_maps(paks) if m.rsplit('/', 1)[1][:-5].lower() == name.lower()]
+    if not found:
+        sys.exit('No map called %s. Maps: %s' % (name, ', '.join(m.rsplit('/', 1)[1][:-5] for m in game_maps(paks))))
+    return found[0]
+
+
+def write_atmosphere(sc):
+    """Move precomputed sky tables out of the scene into files the editor script loads (too big for the job JSON)."""
+    for a in sc['actors']:
+        if a.get('atmosphere'):
+            files = []
+            for part, data in zip(('transmittance', 'irradiance', 'inscatter'), a['atmosphere']):
+                files.append(os.path.join(build.BUILD, 'mapkit_atmosphere_%s.bin' % part))
+                open(files[-1], 'wb').write(data)
+            a['atmosphere'] = files
+
+
+def import_map(args):
+    paks = pakfile.game_paks(args.game or build.find_game())
+    umap = map_path(paks, args.map)
+    level = '/Game/' + umap[len('LemnisGate/Content/'):-len('.umap')]
+    existing = os.path.join(PROJECT, 'Content', umap[len('LemnisGate/Content/'):])
+    if os.path.exists(existing):
+        os.remove(existing)
+    print('[1/2] Reading %s' % umap)
+    sc = scene.export(paks, umap)
+    print('  %d actors' % len(sc['actors']))
+    write_atmosphere(sc)
+    print('[2/2] Rebuilding it as %s in the editor' % level)
+    result = editor_script(args, 'import_map.py', {'scene': sc, 'level': level}, 'mapkit_import.log')
+    print('  %d actors placed, %d failed, %d placeholder assets; world settings %s%s' % (
+        result['spawned'], len(result['failed']), len(result['placeholders']), result['world_settings'],
+        ''.join('\n    %s: %s' % kv for kv in result['failed'].items())))
+
+
+def kit_levels():
+    """Levels in the kit project, as content-relative paths (Levels/Playable/CTF_Arches.umap)."""
+    content = os.path.join(PROJECT, 'Content')
+    out = []
+    for root, _, files in os.walk(content):
+        out += [os.path.relpath(os.path.join(root, f), content).replace(os.sep, '/') for f in files if f.endswith('.umap')]
+    return sorted(out)
+
+
+def build_maps(args):
+    levels = kit_levels()
+    if not levels:
+        sys.exit('No levels in the kit yet - run "python mapkit/kit.py import <Map>" first.')
+    editor, unrealpak = build.engine_tools(args.ue)
+    cooked = os.path.join(PROJECT, 'Saved', 'Cooked', 'WindowsNoEditor')
+    shutil.rmtree(cooked, ignore_errors=True)
+    print('[1/3] Cooking %s' % ', '.join(l[:-5] for l in levels))
+    run([editor, UPROJECT, '-run=cook', '-targetplatform=WindowsNoEditor', '-unversioned']
+        + ['-map=/Game/' + l[:-5] for l in levels] + COMMON, 'mapkit_cook.log')
+    print('[2/3] Checking every reference against the game')
+    game = args.game or build.find_game()
+    paks = pakfile.game_paks(game)
+    textures = os.path.join(build.OUT, build.PAK_NAME)
+    checker = verify.Checker(([pakfile.Pak(textures)] if os.path.exists(textures) else []) + paks,
+                             os.path.join(game, 'LemnisGate', 'Binaries', 'Win64', 'LemnisGate-Win64-Shipping.exe'))
+    bad = False
+    for l in levels:
+        base = os.path.join(cooked, 'LemnisGate', 'Content', l[:-5].replace('/', os.sep))
+        problems = checker.check(base + '.umap', base + '.uexp')
+        print('  %s: %s' % (l[:-5], 'ok' if not problems else '%d problems' % len(problems)))
+        for p in problems:
+            print('    ' + p)
+        bad = bad or bool(problems)
+    if bad and not args.force:
+        sys.exit('Not packed: those references would be missing in-game (pass --force to pack anyway).')
+    print('[3/3] Packing the map files only (the game supplies everything they reference)')
+    resp = os.path.join(build.BUILD, 'mapkit_pak_files.txt')
+    with open(resp, 'w') as f:
+        for l in levels:
+            base = os.path.join(cooked, 'LemnisGate', 'Content', l[:-5].replace('/', os.sep))
+            files = [base + ext for ext in ('.umap', '.uexp', '.ubulk') if os.path.exists(base + ext)]
+            if not files:
+                sys.exit('Cook did not produce %s - see %s' % (l, os.path.join(LOGS, 'mapkit_cook.log')))
+            for src in files:
+                f.write('"%s" "../../../LemnisGate/Content/%s"\n' % (src, l[:-5] + os.path.splitext(src)[1]))
+    os.makedirs(build.OUT, exist_ok=True)
+    pak = os.path.join(build.OUT, PAK_NAME)
+    run([unrealpak, pak, '-create=' + resp], 'mapkit_pak.log')
+    print('Built %s (%d maps)' % (pak, len(levels)))
+    if args.install:
+        dest = build.mods_dir(args)
+        shutil.copy2(pak, dest)
+        print('Installed to ' + os.path.join(dest, PAK_NAME))
+
+
+PAK_NAME = 'SalvageOps_Maps_P.pak'
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('command', choices=['setup', 'import', 'build'])
+    ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
+    ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
+    ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
+    ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
+    ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
+    args = ap.parse_args()
+    if args.command == 'import' and not args.map:
+        ap.error('import needs a map name')
+    {'setup': setup, 'import': import_map, 'build': build_maps}[args.command](args)
+
+
+if __name__ == '__main__':
+    main()

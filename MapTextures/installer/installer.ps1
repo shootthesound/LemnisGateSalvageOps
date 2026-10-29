@@ -75,6 +75,8 @@ function Install {
 
     $mods = @(Get-ChildItem -Path $Here -Filter 'SalvageOps_*_P.pak')
     if ($mods.Count -eq 0) { Show "No texture pak found next to the installer." 'Error'; exit 1 }
+    # Edited maps from an older zip would otherwise stay installed.
+    Get-ChildItem -Path $paks -Filter 'SalvageOps_*_P.pak' | Where-Object { $mods.Name -notcontains $_.Name } | Remove-Item -Force
     foreach ($p in $mods) { Copy-Item $p.FullName $paks -Force }
     Set-Content -Path (Join-Path $win64 'steam_appid.txt') -Value $AppId -NoNewline -Encoding Ascii
     $dev = Enable-DevMode
@@ -88,7 +90,7 @@ function Install {
     $lnk.Save()
 
     Show ("Installed into:`n$game`n`n" +
-          "- Map textures: $($mods.Count) pak(s) copied`n" +
+          "- Map textures and edited maps: $(($mods | ForEach-Object Name) -join ', ')`n" +
           "- Developer mode (P2P menu): $dev`n" +
           "- Desktop shortcut: Lemnis Gate (Salvage Ops)`n`n" +
           "Start the game with the desktop shortcut while Steam is running. " +

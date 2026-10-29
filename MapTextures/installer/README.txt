@@ -1,6 +1,7 @@
 Lemnis Gate - Salvage Ops map textures
 
-Adds textures to the untextured prototype maps and sets up developer mode (the P2P menu).
+Adds textures to the untextured prototype maps, any edited maps included (SalvageOps_Maps_P.pak), and sets up
+developer mode (the P2P menu). Everyone in a match needs the same version of this zip, or edited maps won't match.
 
 INSTALL
 1. Run the game once through Steam and quit from the main menu (first time only).

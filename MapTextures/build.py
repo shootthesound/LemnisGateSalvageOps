@@ -435,13 +435,17 @@ def package(args):
     pak = os.path.join(OUT, PAK_NAME)
     if not os.path.exists(pak):
         sys.exit('Nothing built yet - run "python build.py build" first.')
+    import glob
     import zipfile
     dest = os.path.join(OUT, 'SalvageOps_MapTextures.zip')
+    # Plus the Map Kit's edited maps (mapkit/kit.py build), which everyone in a match needs too.
+    paks = sorted(glob.glob(os.path.join(OUT, 'SalvageOps_*_P.pak')))
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in ('Install.bat', 'Uninstall.bat', 'installer.ps1', 'README.txt'):
             z.write(os.path.join(HERE, 'installer', f), f)
-        z.write(pak, PAK_NAME)
-    print('Packaged ' + dest)
+        for p in paks:
+            z.write(p, os.path.basename(p))
+    print('Packaged %s (%s)' % (dest, ', '.join(os.path.basename(p) for p in paks)))
 
 
 def init(args):
