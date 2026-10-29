@@ -76,9 +76,15 @@ def master(defaults):
     link(tile, '', uv, 'B')
     slope_tile = expr(m, unreal.MaterialExpressionScalarParameter, -1200, 220, parameter_name='SlopeTileSize',
                       default_value=600.0)
-    slope_uv = expr(m, unreal.MaterialExpressionDivide, -1000, 160)
-    link(xy, '', slope_uv, 'A')
-    link(slope_tile, '', slope_uv, 'B')
+    # Slopes are textured from the side (projected along X and along Y), so steep faces aren't smeared by the
+    # top-down projection: YZ for faces facing X, XZ for faces facing Y.
+    side_uv = {}
+    for axis, mask, yy in (('x', dict(r=False, g=True, b=True, a=False), 160), ('y', dict(r=True, g=False, b=True, a=False), 260)):
+        plane = expr(m, unreal.MaterialExpressionComponentMask, -1200, yy + 160, **mask)
+        link(world, '', plane, '')
+        side_uv[axis] = expr(m, unreal.MaterialExpressionDivide, -1000, yy + 160)
+        link(plane, '', side_uv[axis], 'A')
+        link(slope_tile, '', side_uv[axis], 'B')
     # Slope blend: 0 on flat ground, 1 on steep slopes.
     normal_ws = expr(m, unreal.MaterialExpressionVertexNormalWS, -1400, 500)
     nz = expr(m, unreal.MaterialExpressionComponentMask, -1200, 500, r=False, g=False, b=True, a=False)
@@ -95,6 +101,25 @@ def master(defaults):
     link(width, '', div, 'B')
     alpha = expr(m, unreal.MaterialExpressionSaturate, -600, 500)
     link(div, '', alpha, '')
+    # Which side projection: |N.x| / (|N.x| + |N.y|).
+    nx = expr(m, unreal.MaterialExpressionComponentMask, -1200, 800, r=True, g=False, b=False, a=False)
+    ny = expr(m, unreal.MaterialExpressionComponentMask, -1200, 880, r=False, g=True, b=False, a=False)
+    link(normal_ws, '', nx, '')
+    link(normal_ws, '', ny, '')
+    ax = expr(m, unreal.MaterialExpressionAbs, -1050, 800)
+    ay = expr(m, unreal.MaterialExpressionAbs, -1050, 880)
+    link(nx, '', ax, '')
+    link(ny, '', ay, '')
+    total = expr(m, unreal.MaterialExpressionAdd, -900, 840)
+    link(ax, '', total, 'A')
+    link(ay, '', total, 'B')
+    eps = expr(m, unreal.MaterialExpressionConstant, -900, 920, r=0.0001)
+    safe = expr(m, unreal.MaterialExpressionAdd, -800, 860)
+    link(total, '', safe, 'A')
+    link(eps, '', safe, 'B')
+    side_w = expr(m, unreal.MaterialExpressionDivide, -700, 820)
+    link(ax, '', side_w, 'A')
+    link(safe, '', side_w, 'B')
 
     samplers = {'albedo': unreal.MaterialSamplerType.SAMPLERTYPE_COLOR,
                 'normal': unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL,
@@ -104,13 +129,20 @@ def master(defaults):
     for role in ('albedo', 'normal', 'orm'):
         flat = expr(m, unreal.MaterialExpressionTextureSampleParameter2D, -700, y,
                     parameter_name='Flat' + ROLES[role][0], texture=defaults[role], sampler_type=samplers[role])
-        slope = expr(m, unreal.MaterialExpressionTextureSampleParameter2D, -700, y + 220,
-                     parameter_name='Slope' + ROLES[role][0], texture=defaults[role], sampler_type=samplers[role])
+        sides = {}
+        for k, axis in enumerate(('x', 'y')):
+            sides[axis] = expr(m, unreal.MaterialExpressionTextureSampleParameter2D, -700, y + 150 + k * 150,
+                               parameter_name='Slope' + ROLES[role][0], texture=defaults[role],
+                               sampler_type=samplers[role])
+            link(side_uv[axis], '', sides[axis], 'UVs')
         link(uv, '', flat, 'UVs')
-        link(slope_uv, '', slope, 'UVs')
+        slope = expr(m, unreal.MaterialExpressionLinearInterpolate, -500, y + 220)
+        link(sides['y'], 'RGB', slope, 'A')  # faces facing Y use the XZ projection
+        link(sides['x'], 'RGB', slope, 'B')
+        link(side_w, '', slope, 'Alpha')
         lerp = expr(m, unreal.MaterialExpressionLinearInterpolate, -350, y + 100)
         link(flat, 'RGB', lerp, 'A')
-        link(slope, 'RGB', lerp, 'B')
+        link(slope, '', lerp, 'B')
         link(alpha, '', lerp, 'Alpha')
         lerps[role] = lerp
         y += 450

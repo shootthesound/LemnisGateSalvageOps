@@ -86,8 +86,9 @@ For example:
 - **Props and architecture** (`Content/Environment/...`): containers, walls, rocks, pipes and the rest of the finished
   maps' meshes.
 
-Materials show as grey in the editor (only the prototype slots have the kit's textures), but the game uses the real
-ones.
+Materials look like the game's in the editor. Setup decodes each game material's colour texture and normal map and
+builds a simplified look-alike at the same path (`kit.py materials` redoes it). They're simplified: no emissive glow,
+no special effects, and a fixed roughness. In game, the real materials are used.
 
 ## Terrain
 
@@ -103,6 +104,7 @@ Any map can have terrain. Create it in the editor:
 3. Click **Create**, then sculpt.
 
 The materials put the ground texture on flat areas and rock on slopes by themselves, so there's nothing to paint.
+Slopes are textured from the side, so even cliffs and spikes don't smear.
 Change the look per map by making a material instance of `M_Terrain`. Its settings are the flat and slope textures,
 `TileSize`, `SlopeStart` and `SlopeWidth`.
 
@@ -118,8 +120,11 @@ The kit's terrain materials and textures go into the maps pak, adding about 45 M
   - The pak carries your maps plus the kit's own assets under `/Game/SalvageOps`.
   - Other new meshes, materials or Blueprints would be missing in game, and the build refuses them.
   - To make your own assets, put them under `Content/SalvageOps`.
-- **Don't press Play in the editor.** The stand-ins don't contain the game's logic, and touching a flag or jump pad in
-  the editor would call an event they don't have.
+- **Play in the editor is a walkthrough.**
+  - **Play** puts you in a flying camera with collision, so you can check layout, sightlines, lighting and that
+    objects sit right.
+  - Flags, pods, turrets and the rest don't do anything there: their logic only exists in the game.
+  - To test gameplay, build and play in the game.
 - **Spawn points need a team.** Select one and set **Team Side** to Attacker or Defender. The `*_Box` maps show the
   usual count: five per team, plus two observer spawns.
 - **Bake lighting for finished-looking maps.**

@@ -128,8 +128,10 @@ class Package:
             return r.i32()
         if ptype == 'ObjectProperty':
             return ('ref', r.i32())
-        if ptype == 'NameProperty':
+        if ptype == 'NameProperty' or ptype == 'EnumProperty':
             return self.fname(r)
+        if ptype == 'ByteProperty':  # an enum stored by name (e.g. EBlendMode::BLEND_Masked), else a plain byte
+            return self.fname(r) if extra and extra != 'None' else r.raw(1)[0]
         if ptype == 'StructProperty':
             return NATIVE[extra](r) if extra in NATIVE else self._props(r)
         if ptype == 'ArrayProperty':

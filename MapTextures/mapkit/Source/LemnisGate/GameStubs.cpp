@@ -1,6 +1,7 @@
 #include "GameStubs.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "GameFramework/DefaultPawn.h"
 #include "GameFramework/RotatingMovementComponent.h"
 #include "Modules/ModuleManager.h"
 #include "Particles/ParticleSystemComponent.h"
@@ -106,6 +107,56 @@ void AMapKitActor::OnConstruction(const FTransform& Transform)
 		Property->SetMulticastDelegate(Value, MoveTemp(Bindings));
 	}
 #endif
+}
+
+void AMapKitActor::PreInitializeComponents()
+{
+	Super::PreInitializeComponents();
+#if WITH_EDITORONLY_DATA
+	UWorld* World = GetWorld();
+	if (!World || World->WorldType != EWorldType::PIE)
+	{
+		return;
+	}
+	TInlineComponentArray<UActorComponent*> Components;
+	GetComponents(Components);
+	for (const TPair<FString, FString>& Event : ComponentEvents)
+	{
+		FString ComponentName, PropertyName;
+		UObject* Target = this;
+		if (Event.Key.Split(TEXT("."), &ComponentName, &PropertyName))
+		{
+			UActorComponent* const* Found = Components.FindByPredicate([&](UActorComponent* C) { return C->GetName() == ComponentName; });
+			Target = Found ? *Found : nullptr;
+		}
+		else
+		{
+			PropertyName = Event.Key;
+		}
+		FMulticastDelegateProperty* Property = Target ? FindFProperty<FMulticastDelegateProperty>(Target->GetClass(), *PropertyName) : nullptr;
+		if (!Property)
+		{
+			continue;
+		}
+		// Before anything can fire: these are only the level's saved bindings, to functions only the game has.
+		Property->ClearDelegate(Target, Property->ContainerPtrToValuePtr<void>(Target));
+	}
+#endif
+}
+
+static UClass* WalkthroughPawn(UWorld* World, UClass* Default)
+{
+	return World && World->WorldType == EWorldType::PIE ? ADefaultPawn::StaticClass() : Default;
+}
+
+UClass* AConvergenceGameMode::GetDefaultPawnClassForController_Implementation(AController* InController)
+{
+	return WalkthroughPawn(GetWorld(), Super::GetDefaultPawnClassForController_Implementation(InController));
+}
+
+UClass* AConstructGameMode::GetDefaultPawnClassForController_Implementation(AController* InController)
+{
+	return WalkthroughPawn(GetWorld(), Super::GetDefaultPawnClassForController_Implementation(InController));
 }
 
 AConvergenceLightningTower::AConvergenceLightningTower()

@@ -2,6 +2,7 @@
 
     python mapkit/kit.py setup              generate the editor project, compile its stand-in C++ module and
                                             create stand-ins for the game's gameplay Blueprints
+    python mapkit/kit.py materials          (re)make editor look-alikes of the game's materials (part of setup)
     python mapkit/kit.py meshes             (re)create editor copies of the game's meshes (part of setup)
     python mapkit/kit.py terrain            (re)make the terrain materials (part of setup)
     python mapkit/kit.py library            (re)make the object library level, /Game/MapKit/ObjectLibrary
@@ -28,6 +29,7 @@ import os
 import re
 import shutil
 import struct
+import zlib
 import subprocess
 import sys
 
@@ -39,9 +41,11 @@ import bpinfo  # noqa: E402
 import mapgeo  # noqa: E402
 import maplist  # noqa: E402
 import foliage  # noqa: E402
+import materials  # noqa: E402
 import meshes  # noqa: E402
 import modes  # noqa: E402
 import terrain  # noqa: E402
+import textures  # noqa: E402
 import scene  # noqa: E402
 import verify  # noqa: E402
 
@@ -72,11 +76,27 @@ def write_project():
     open(os.path.join(PROJECT, 'Config', 'DefaultEngine.ini'), 'w').write(
         build.ini_section(game_ini, '/Script/Engine.RendererSettings') +
         '\n\n[/Script/Engine.Engine]\nWorldSettingsClassName=/Script/LemnisGate.ConvergenceWorldSettings\n'
-        '\n[/Script/WindowsTargetPlatform.WindowsTargetSettings]\n-TargetedRHIs=PCD3D_SM4\n+TargetedRHIs=PCD3D_SM5\n')
+        '\n[/Script/WindowsTargetPlatform.WindowsTargetSettings]\n-TargetedRHIs=PCD3D_SM4\n+TargetedRHIs=PCD3D_SM5\n'
+        # The editor opens on the object library rather than an empty template level.
+        '\n[/Script/EngineSettings.GameMapsSettings]\nEditorStartupMap=/Game/MapKit/ObjectLibrary.ObjectLibrary\n')
+    write_game_ini()
+
+
+# Content the pak carries: the levels and the kit's own assets. Everything else in the project is an editor copy of
+# the game's (stand-ins, meshes, look-alike materials), which the cook leaves alone: levels still reference it by
+# path, and the game supplies the real thing.
+SHIPPED = ('Levels', 'SalvageOps')
+
+
+def write_game_ini():
+    content = os.path.join(PROJECT, 'Content')
+    never = sorted(d for d in os.listdir(content) if os.path.isdir(os.path.join(content, d)) and d not in SHIPPED) \
+        if os.path.isdir(content) else []
     open(os.path.join(PROJECT, 'Config', 'DefaultGame.ini'), 'w').write(
         '[/Script/EngineSettings.GeneralProjectSettings]\nProjectName=LemnisGate\n\n'
         '[/Script/UnrealEd.ProjectPackagingSettings]\nbShareMaterialShaderCode=False\n'
-        'bSharedMaterialNativeLibraries=False\nUsePakFile=True\n')
+        'bSharedMaterialNativeLibraries=False\nUsePakFile=True\n'
+        + ''.join('+DirectoriesToNeverCook=(Path="/Game/%s")\n' % d for d in never))
 
 
 def compile_module(ue):
@@ -183,7 +203,8 @@ def setup(args):
     cat = blueprint_catalog(paks)
     json.dump(cat, open(os.path.join(build.BUILD, 'mapkit_blueprints.json'), 'w'), indent=1)
     print('  %d Blueprints' % len(cat))
-    print('[4/7] Copying the game\'s meshes into the editor (the stand-ins use them)')
+    print('[4/7] Making editor look-alikes of the game\'s materials, then copying its meshes (the stand-ins use them)')
+    make_materials(args, paks, cat)
     import_meshes(args, paks, cat)
     print('[5/7] Creating Blueprint stand-ins in the editor')
     make_stubs(args, cat)
@@ -251,6 +272,87 @@ def used_meshes(paks, cat):
             if isinstance(mesh, str):
                 paths.add(mesh)
     return sorted(p for p in paths if p.startswith('/Game/'))
+
+
+def used_materials(paks, cat):
+    """Materials the game's maps, meshes and foliage use."""
+    paths = set()
+    for m in game_maps(paks):
+        pkg = mapgeo.Package(pakfile.find(paks, m), pakfile.find(paks, m[:-5] + '.uexp'))
+        paths |= {pkg.import_path(-i - 1) for i, imp in enumerate(pkg.imports)
+                  if imp['class'] in ('Material', 'MaterialInstanceConstant')}
+    for mesh in used_meshes(paks, cat):
+        try:
+            paths |= {m.split('.')[0] for m in meshes.read(paks, mesh).materials if m}
+        except Exception:
+            pass
+    return sorted(p for p in paths if p.startswith('/Game/'))
+
+
+def make_materials(args, paks=None, cat=None):
+    paks = paks or pakfile.game_paks(args.game or build.find_game())
+    cat = cat or json.load(open(os.path.join(build.BUILD, 'mapkit_blueprints.json')))
+    folder = os.path.join(build.BUILD, 'mapkit_preview')
+    os.makedirs(folder, exist_ok=True)
+    kinds, decoded, jobs = {}, {}, []
+
+    def kind(t):
+        if t not in kinds:
+            try:
+                kinds[t] = textures.kind(paks, t)
+            except Exception:
+                kinds[t] = None
+        return kinds[t]
+
+    def png(tex, normal, alpha=False):
+        """The texture decoded to a PNG (cached), as (file, asset name) or (None, None). With alpha for cut-outs."""
+        key = (tex, alpha)
+        if key not in decoded:
+            name = re.sub(r'[^A-Za-z0-9_]', '_', tex.rsplit('/', 1)[1]) + '_%08x' % (zlib.crc32(tex.encode()) & 0xffffffff)
+            name += '_a' if alpha else ''
+            path = os.path.join(folder, name + '.png')
+            if not os.path.exists(path):
+                try:
+                    img = textures.decode(paks, tex, 512 if normal else 1024)
+                except Exception:
+                    img = None
+                if img is None:
+                    decoded[key] = (None, None)
+                    return decoded[key]
+                img.convert('RGBA' if alpha else 'RGB').save(path)
+            decoded[key] = (path, name)
+        return decoded[key]
+
+    real = os.path.join(build.PROJECT, 'Content')  # the texture project's own materials are real: keep them
+    mats = used_materials(paks, cat)
+    for k, path in enumerate(mats):
+        if os.path.exists(os.path.join(real, path[len('/Game/'):] + '.uasset')):
+            continue
+        try:
+            look = materials.pick(paks, path, kind)
+        except Exception:
+            continue
+        if not look['class']:
+            continue
+        job = {'path': path, 'class': look['class'], 'tint': look['tint'], 'masked': look['masked']}
+        # A child of one of the Texture Studio's materials looks like that in game (the textures pak replaces the
+        # parent), so in the editor too: the real material as parent, with the game instance's own settings.
+        restyled = next((a for a in look['ancestors']
+                         if os.path.exists(os.path.join(real, a[len('/Game/'):] + '.uasset'))), None)
+        if restyled and look['class'] == 'MaterialInstanceConstant':
+            job.update(parent=restyled, scalars=look['scalars'], colors=look['colors'])
+            jobs.append(job)
+            continue
+        if look['base']:
+            job['base_png'], job['base_name'] = png(look['base'], False, look['masked'])
+        if look['normal']:
+            job['normal_png'], job['normal_name'] = png(look['normal'], True)
+        jobs.append(job)
+        if k % 100 == 0:
+            print('  %d/%d materials read' % (k, len(mats)))
+    result = editor_script(args, 'make_previews.py', {'materials': jobs}, 'mapkit_previews.log')
+    print('  %d look-alike materials, %d failed%s' % (result['made'], len(result['failed']),
+                                                     ''.join('\n    ' + f for f in result['failed'][:10])))
 
 
 def import_meshes(args, paks=None, cat=None):
@@ -567,6 +669,7 @@ def build_maps(args):
     if not levels:
         sys.exit('No levels in the kit yet - run "python mapkit/kit.py import <Map>" first.')
     editor, unrealpak = build.engine_tools(args.ue)
+    write_game_ini()
     cooked = os.path.join(PROJECT, 'Saved', 'Cooked', 'WindowsNoEditor')
     shutil.rmtree(cooked, ignore_errors=True)
     print('[1/3] Cooking %s' % ', '.join(l[:-5] for l in levels))
@@ -634,7 +737,7 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'light', 'build'])
+    ap.add_argument('command', choices=['setup', 'materials', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'light', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
@@ -653,7 +756,7 @@ def main():
     args = ap.parse_args()
     if args.command in ('import', 'new', 'mode', 'remove', 'light') and not args.map:
         ap.error('%s needs a map name' % args.command)
-    {'setup': setup, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
+    {'setup': setup, 'materials': make_materials, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
      'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'light': bake_lighting, 'build': build_maps}[args.command](args)
 
 

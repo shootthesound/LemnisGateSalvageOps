@@ -118,6 +118,10 @@ public:
 	TMap<FString, FString> ComponentEvents;
 #endif
 	virtual void OnConstruction(const FTransform& Transform) override;
+
+	// Play in Editor: drop event bindings to the game's functions, which the stand-ins don't have (calling one would
+	// crash the editor). The saved level keeps them.
+	virtual void PreInitializeComponents() override;
 };
 
 UCLASS()
@@ -198,10 +202,18 @@ class AConvergenceGameMode : public AGameMode
 	GENERATED_BODY()
 public:
 	AConvergenceGameMode();
+
+	// Play in Editor walks the map with a flying pawn (the game's characters and rules aren't in the kit).
+	virtual UClass* GetDefaultPawnClassForController_Implementation(AController* InController) override;
 };
 
 UCLASS(Blueprintable)
-class AConstructGameMode : public AGameMode { GENERATED_BODY() };  // no state machine (TrainingGameMode has none)
+class AConstructGameMode : public AGameMode  // no state machine (TrainingGameMode has none)
+{
+	GENERATED_BODY()
+public:
+	virtual UClass* GetDefaultPawnClassForController_Implementation(AController* InController) override;
+};
 
 UCLASS(Blueprintable)
 class AConvergenceGameState : public AGameState { GENERATED_BODY() };
