@@ -371,7 +371,10 @@ def slot_files(slot, scope=None, surface=None):
 
 def backup(slot, scope=None, surface=None):
     """Copy the slot's current files aside so the change can be undone; returns the undo id."""
-    undo_id = '%s_%d' % (slot, int(time.time() * 1000))
+    stamp = int(time.time() * 1000)
+    while os.path.exists(os.path.join(HISTORY, '%s_%d' % (slot, stamp))):  # two changes in the same millisecond
+        stamp += 1
+    undo_id = '%s_%d' % (slot, stamp)
     dest = os.path.join(HISTORY, undo_id)
     os.makedirs(dest)
     for f in slot_files(slot, scope, surface):
