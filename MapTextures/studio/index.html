@@ -45,6 +45,12 @@ header .spacer { flex: 1; }
 .menu .items button:hover { background: var(--sel); }
 .menu .items small { display: block; color: var(--dim); }
 
+#guide { display: flex; gap: 16px; align-items: center; padding: 10px 16px; background: #131c28; border-bottom: 1px solid var(--line); font-size: 13px; }
+#guide .steps { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+#guide .num { display: inline-flex; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #1a0d00; font-weight: 700;
+  font-size: 12px; align-items: center; justify-content: center; margin-right: 6px; }
+header { position: relative; }
+#jobBar { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--accent); width: 0; transition: width .6s; }
 #setup { display: none; padding: 8px 16px; background: #3a2a0a; color: var(--warn); border-bottom: 1px solid #6b4f16; font-size: 13px; }
 
 main { flex: 1; display: grid; grid-template-columns: 280px minmax(380px, 1fr) minmax(400px, 1.1fr); min-height: 0; }
@@ -156,12 +162,19 @@ details.adv summary { cursor: pointer; color: var(--dim); margin-top: 12px; font
 .toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; max-width: 380px; box-shadow: 0 6px 24px rgba(0,0,0,.4); animation: in .2s; }
 .toast.ok { border-left-color: var(--ok); } .toast.bad { border-left-color: var(--bad); }
 @keyframes in { from { transform: translateY(8px); opacity: 0; } }
+#dropZone { display: none; position: fixed; inset: 0; z-index: 60; background: rgba(13,17,23,.85); padding: 30px; }
+#dropZone.on { display: block; }
+#dropZone .inner { height: 100%; border: 3px dashed var(--accent); border-radius: 18px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; text-align: center; pointer-events: none; }
+#dropZone .big { font-size: 26px; }
 kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--dim); }
 </style>
 </head>
 <body>
 <header>
   <h1><span>Salvage Ops</span> Texture Studio</h1>
+  <button class="ghost" id="helpBtn" title="How this works" style="padding:2px 9px;border-radius:50%">?</button>
+  <div id="jobBar"></div>
   <div class="spacer"></div>
   <div id="status"><span class="dot" id="statusDot"></span><span id="statusText">Idle</span></div>
   <label class="toggle" title="Shared slots also change the finished maps"><input type="checkbox" id="allowShared"> Include shared slots</label>
@@ -176,6 +189,14 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
   </div>
 </header>
 <div id="setup"></div>
+<div id="guide" style="display:none">
+  <div class="steps">
+    <div><span class="num">1</span><b>Pick a slot</b> on the left. Each one is a greybox colour shared by many maps. Use <b>Debug textures</b> (More ▾) once to see which surface is which.</div>
+    <div><span class="num">2</span><b>Click a material</b> to try it in the preview, then <b>Apply</b>. Drop your own texture files anywhere to try those instead.</div>
+    <div><span class="num">3</span><b>Build &amp; install</b>, then start the game <b>without EasyAntiCheat</b> (the Salvage Ops shortcut, or LemnisGate-Win64-Shipping.exe).</div>
+  </div>
+  <button class="ghost" id="guideClose" title="Hide this guide">Got it</button>
+</div>
 <main>
   <section>
     <div id="scopeBox">
@@ -210,7 +231,9 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
     </div>
   </section>
   <section>
-    <div class="sechead"><h2>ambientCG library</h2><span class="dim" style="font-size:12px">CC0 · free to use</span></div>
+    <div class="sechead"><h2>ambientCG library</h2><span class="dim" style="font-size:12px">CC0 · free to use</span>
+      <button class="ghost" id="ownBtn" style="padding:4px 10px;font-size:12px" title="Use texture files from your PC (or drag them anywhere onto this window)">Use your own…</button>
+      <input type="file" id="ownInput" multiple accept="image/*,.tga,.zip" style="display:none"></div>
     <div id="libTools">
       <div class="row">
         <input id="search" type="search" placeholder="Search materials…  ( / )" autocomplete="off">
@@ -233,6 +256,8 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
   <pre id="log"></pre>
 </div>
 <div id="toasts"></div>
+<div id="dropZone"><div class="inner"><div class="big">Drop to try on <b id="dropSlot"></b></div>
+  <div class="dim">Images (colour, normal, roughness, AO, metal…) or a texture-set .zip.<br>Files are sorted by name: <code>_Color</code>, <code>_diff</code>, <code>_Normal</code>, <code>_nor_gl</code>, <code>_Roughness</code>, <code>_AO</code>, <code>_ARM</code>…</div></div></div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -739,21 +764,8 @@ async function tryMaterial(card, a) {
   try {
     const st = await api('/api/stage', { asset: a.id, resolution: res });
     if (sel !== slot) return;
-    trying = { a, res, slot: slot.name };
     document.querySelectorAll('.card').forEach(c => c.classList.toggle('trying', c === card));
-    highlightUsed();
-    if (!slot.effective || slot.inherited) {
-      slot.savedEffective = slot.effective;
-      slot.effective = slot.effective ? JSON.parse(JSON.stringify(slot.effective)) : defaultsFor(slot);
-      slot.tempEffective = true; renderControls();
-    }
-    preview.setSlot(slot, { key: 'stage:' + st.id, url: k => `/stage/${st.id}/${k}`, maps: st.maps });
-    $('#tryBar').style.display = 'flex';
-    $('#tryBar').innerHTML = `<img src="${esc(a.preview)}" alt=""><div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}</b>${scope ? ` (${esc(scope)} only)` : ''}
-      <div class="dim" style="font-size:12px">${res} · not applied yet</div></div>
-      <button class="ghost" id="tryCancel">Cancel</button><button class="primary" id="tryApply">Apply to ${slot.name}</button>`;
-    $('#tryCancel').onclick = endTry;
-    $('#tryApply').onclick = () => applyMaterial(a, res, slot);
+    enterTry(slot, a, st, res, res);
   } catch (err) {
     toast(`Could not download ${esc(a.name)}: ${esc(err.message)}`, 'bad');
   } finally { card.querySelector('.busy')?.remove(); }
@@ -763,13 +775,15 @@ function endTry() {
   document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying'));
   highlightUsed();
   if (sel && sel.tempEffective) { sel.effective = sel.savedEffective || null; sel.tempEffective = false; renderControls(); }
-  if (sel) preview.setSlot(sel);
+  if (sel) { renderSource(); preview.setSlot(sel); }
 }
 async function applyMaterial(a, res, slot) {
   $('#tryApply').disabled = true;
   try {
     clearTimeout(saveTimer);
-    const r = await api('/api/assign', withScope({ slot: slot.name, asset: a.id, resolution: res }));
+    const r = a.upload
+      ? await api('/api/assign_upload', withScope({ slot: slot.name, id: a.upload, label: a.name }))
+      : await api('/api/assign', withScope({ slot: slot.name, asset: a.id, resolution: res }));
     // Keep any slider changes made while trying.
     if (slot.effective) await api('/api/settings', withScope({ slot: slot.name, settings: settingsOf(slot) }));
     trying = null; $('#tryBar').style.display = 'none';
@@ -781,6 +795,52 @@ async function applyMaterial(a, res, slot) {
     $('#tryApply').disabled = false;
   }
 }
+// Your own textures: drag files onto the window or use the button; they go through the same try/apply flow.
+function enterTry(slot, a, stage, sub, res = null) {
+  trying = { a, res, slot: slot.name };
+  highlightUsed();
+  if (!slot.effective || slot.inherited) {
+    slot.savedEffective = slot.effective;
+    slot.effective = slot.effective ? JSON.parse(JSON.stringify(slot.effective)) : defaultsFor(slot);
+    slot.tempEffective = true; renderControls();
+  }
+  preview.setSlot(slot, { key: 'stage:' + stage.id, url: k => `/stage/${stage.id}/${k}`, maps: stage.maps });
+  $('#tryBar').style.display = 'flex';
+  $('#tryBar').innerHTML = `${a.preview ? `<img src="${esc(a.preview)}" alt="">` : `<img src="/stage/${stage.id}/albedo" alt="">`}<div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}</b>${scope ? ` (${esc(scope)} only)` : ''}
+    <div class="dim" style="font-size:12px">${sub} · not applied yet</div></div>
+    <button class="ghost" id="tryCancel">Cancel</button><button class="primary" id="tryApply">Apply to ${slot.name}</button>`;
+  $('#tryCancel').onclick = endTry;
+  $('#tryApply').onclick = () => applyMaterial(a, res, slot);
+  $('#srcRow').innerHTML = `<div class="grow">Previewing <b>${esc(a.name)}</b>. Adjust the settings below, then <b>Apply</b> to keep it
+    ${slot.maps.length && !slot.inherited ? `(replaces <b>${esc(slot.source ? slot.source.asset : 'the current texture')}</b>)` : ''} or <b>Cancel</b>.</div>`;
+}
+const readB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(f); });
+async function useOwnFiles(fileList) {
+  const files = [...fileList].filter(f => /\.(png|jpe?g|tga|bmp|tiff?|webp|zip)$/i.test(f.name));
+  if (!files.length) { toast('Those files are not images or a .zip.', 'bad'); return; }
+  const slot = sel;
+  if (trying) endTry();
+  const t = document.createElement('div'); t.className = 'toast'; t.innerHTML = `<span class="spinner" style="display:inline-block;width:14px;height:14px;vertical-align:middle"></span> Reading ${files.length} file${files.length > 1 ? 's' : ''}…`;
+  $('#toasts').appendChild(t);
+  try {
+    const payload = await Promise.all(files.map(async f => ({ name: f.name, data: await readB64(f) })));
+    const st = await api('/api/upload', { files: payload });
+    if (sel !== slot) return;
+    const found = ['normal', 'orm'].filter(k => st.maps.includes(k)).length;
+    enterTry(slot, { upload: st.id, name: st.label }, st, `your files · colour${found ? ' + ' + st.maps.filter(m => m !== 'albedo').join(' + ') : ' only'}`);
+  } catch (err) {
+    toast('Could not use those files: ' + esc(err.message), 'bad');
+  } finally { t.remove(); }
+}
+$('#ownBtn').onclick = () => $('#ownInput').click();
+$('#ownInput').onchange = e => { useOwnFiles(e.target.files); e.target.value = ''; };
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('#dropSlot').textContent = sel.name + (scope ? ` (${scope} only)` : ''); $('#dropZone').classList.add('on'); });
+window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('#dropZone').classList.remove('on'); } });
+window.addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('#dropZone').classList.remove('on'); useOwnFiles(e.dataTransfer.files); });
+
 $('#grid').onclick = e => {
   const card = e.target.closest('.card'); if (!card || card.querySelector('.busy')) return;
   const a = lib.items.find(i => i.id === card.dataset.id);
@@ -815,6 +875,8 @@ async function pollJob() {
   $('#logDot').className = $('#statusDot').className;
   const secs = Math.round((Date.now() - jobStart) / 1000);
   const step = (j.log.match(/\[(\d)\/4\][^\n]*/g) || []).pop();
+  const stepNum = step ? +step[1] : 0;
+  $('#jobBar').style.width = running ? (j.title === 'Build and install' ? Math.max(4, (stepNum - 0.5) / 4 * 100) : 50) + '%' : '0';
   $('#statusText').textContent = running ? `${j.title}… ${step ? step.slice(0, 5) : ''} ${secs}s` : j.ok === true ? `${j.title}: done` : j.ok === false ? `${j.title}: failed` : 'Idle';
   $('#logTitle').textContent = j.title || 'Build log';
   $('#logInfo').textContent = running ? (step ? step.replace(/^\[\d\/4\] /, '') : 'starting') : '';
@@ -828,6 +890,11 @@ async function pollJob() {
     lastJob = null; loadSlots();
   }
 }
+
+// ------------------------------------------------------------------ guide
+$('#guide').style.display = store.get('guide') === 'hidden' ? 'none' : 'flex';
+$('#guideClose').onclick = () => { $('#guide').style.display = 'none'; store.set('guide', 'hidden'); };
+$('#helpBtn').onclick = () => { const g = $('#guide'); const show = g.style.display === 'none'; g.style.display = show ? 'flex' : 'none'; store.set('guide', show ? '' : 'hidden'); };
 
 // ------------------------------------------------------------------ map scope
 function renderScope() {

@@ -33,7 +33,6 @@ PORT = 8765
 ACG_API = 'https://ambientcg.com/api/v2/full_json'
 RESOLUTIONS = ('1K', '2K', '4K')
 TINTED_BY_DEFAULT = {'White', 'Orange', 'Green', 'Red', 'Yellow', 'Black', 'PaintedMetalBase'}
-MAP_RE = re.compile(r'_(Color|NormalDX|NormalGL|Roughness|AmbientOcclusion|Metalness)\.(jpg|jpeg|png)$', re.I)
 USER_AGENT = {'User-Agent': 'SalvageOpsTextureStudio/1.0'}
 
 CFG = build.load_config()
@@ -206,31 +205,83 @@ def staged(asset_id, res):
     return d
 
 
-def convert(z, asset_id, d):
-    """Write albedo, DirectX normal and ORM (R=AO, G=roughness, B=metalness) PNGs from an ambientCG zip."""
-    found = {}
-    for n in z.namelist():
-        m = MAP_RE.search(n)
-        if m and '/' not in n:
-            found[m.group(1).lower()] = n
-    if 'color' not in found:
-        raise ValueError('%s has no colour map' % asset_id)
+IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.tga', '.bmp', '.tif', '.tiff', '.webp')
+IGNORED = {'disp', 'displacement', 'height', 'bump', 'opacity', 'alpha', 'emission', 'emissive', 'mask', 'preview',
+           'thumb', 'thumbnail', 'sphere', 'specular', 'spec', 'idmap', 'id'}
+
+
+ROLE_TOKENS = {
+    'color': {'color', 'colour', 'albedo', 'basecolor', 'basecolour', 'diffuse', 'diff', 'col', 'base', 'alb', 'd', 'c'},
+    'normal': {'normal', 'nor', 'nrm', 'norm', 'n', 'normaldx', 'normalgl'},
+    'orm': {'arm', 'orm', 'occlusionroughnessmetallic', 'occlusionroughnessmetalness'},
+    'roughness': {'roughness', 'rough'},
+    'ao': {'ao', 'ambientocclusion', 'occlusion'},
+    'metalness': {'metalness', 'metallic', 'metal'},
+}
+
+
+def classify(filename):
+    """Guess what a texture file holds from its name (ambientCG, Poly Haven, Substance and similar conventions).
+    The map type is matched on whole name parts, starting from the end, so asset names like "Metal016" don't count.
+    Returns color, normaldx, normalgl, roughness, ao, metalness, orm, ignore or None."""
+    stem, ext = os.path.splitext(os.path.basename(filename).lower())
+    if ext not in IMAGE_EXT:
+        return 'ignore'
+    tokens = [t for t in re.split(r'[^a-z0-9]+', stem) if t]
+    gl = False
+    for t in reversed(tokens):
+        if t in IGNORED:
+            return 'ignore'
+        if t in ('gl', 'opengl'):
+            gl = True
+            continue
+        for role, names in ROLE_TOKENS.items():
+            if t in names:
+                if role == 'normal':
+                    return 'normalgl' if gl or t == 'normalgl' else 'normaldx'
+                return role
+    return None
+
+
+def roles_from_files(files):
+    """{role: bytes} from {filename: bytes}; a lone unrecognised image is treated as the colour map."""
+    roles, unknown = {}, []
+    for name, data in files.items():
+        role = classify(name)
+        if role == 'ignore':
+            continue
+        if role is None:
+            unknown.append((name, data))
+        elif role not in roles:
+            roles[role] = data
+    if 'color' not in roles and len(unknown) == 1:
+        roles['color'] = unknown[0][1]
+    return roles
+
+
+def convert_roles(roles, label, d):
+    """Write albedo, DirectX normal and ORM (R=AO, G=roughness, B=metalness) PNGs into folder `d`."""
+    if 'color' not in roles:
+        raise ValueError('%s: no colour map found (expected a file named like *_Color, *_albedo or *_diff)' % label)
 
     def img(key, mode):
-        return Image.open(io.BytesIO(z.read(found[key]))).convert(mode)
+        return Image.open(io.BytesIO(roles[key])).convert(mode)
 
     albedo = img('color', 'RGB')
     size = albedo.size
-    def channel(key, default):
-        return img(key, 'L').resize(size) if key in found else Image.new('L', size, default)
-    if 'normaldx' in found:
+    if 'orm' in roles:
+        orm = img('orm', 'RGB').resize(size)
+    else:
+        def channel(key, default):
+            return img(key, 'L').resize(size) if key in roles else Image.new('L', size, default)
+        orm = Image.merge('RGB', (channel('ao', 255), channel('roughness', 128), channel('metalness', 0)))
+    if 'normaldx' in roles:
         normal = img('normaldx', 'RGB').resize(size)
-    elif 'normalgl' in found:
+    elif 'normalgl' in roles:
         r, g, b = img('normalgl', 'RGB').resize(size).split()
         normal = Image.merge('RGB', (r, g.point(lambda v: 255 - v), b))  # OpenGL -> DirectX
     else:
         normal = None
-    orm = Image.merge('RGB', (channel('ambientocclusion', 255), channel('roughness', 128), channel('metalness', 0)))
 
     tmp = d + '.part'
     shutil.rmtree(tmp, ignore_errors=True)
@@ -241,6 +292,36 @@ def convert(z, asset_id, d):
     orm.save(os.path.join(tmp, 'orm.png'))
     shutil.rmtree(d, ignore_errors=True)
     os.replace(tmp, d)
+
+
+def convert(z, asset_id, d):
+    files = {n: z.read(n) for n in z.namelist() if '/' not in n and not n.endswith('/')}
+    convert_roles(roles_from_files(files), asset_id, d)
+
+
+def upload_label(filename):
+    """A readable name from a texture file name: 'Metal016_2K-JPG_Color.jpg' -> 'Metal016'."""
+    noise = set().union(*ROLE_TOKENS.values(), IGNORED, {'gl', 'dx', 'opengl', 'jpg', 'jpeg', 'png', 'tga', 'tif', 'tiff', 'webp', 't'})
+    tokens = re.split(r'[^A-Za-z0-9]+', os.path.splitext(os.path.basename(filename))[0])
+    kept = [t for t in tokens if t and t.lower() not in noise and not re.fullmatch(r'\d+k', t.lower())]
+    return ' '.join(kept) or 'Your texture'
+
+
+def stage_upload(files):
+    """Stage dropped files (images and/or zips) for the try/apply flow; returns (stage id, label)."""
+    flat = {}
+    for name, data in files.items():
+        if name.lower().endswith('.zip'):
+            z = zipfile.ZipFile(io.BytesIO(data))
+            for n in z.namelist():
+                if not n.endswith('/'):
+                    flat[n.rsplit('/', 1)[-1]] = z.read(n)
+        else:
+            flat[os.path.basename(name)] = data
+    label = upload_label(next(iter(flat), 'upload'))
+    stage_id = 'upload_%d' % int(time.time() * 1000)
+    convert_roles(roles_from_files(flat), label, os.path.join(STAGING, stage_id))
+    return stage_id, re.sub(r'[^\w\- .]', '', label)[:60] or 'Your texture'
 
 
 SLOT_FILES = ('source.json', 'settings.json')
@@ -275,8 +356,8 @@ def undo(slot, undo_id, scope=None):
         shutil.copy2(os.path.join(src, f), d)
 
 
-def assign(slot, asset_id, res, scope=None):
-    src = staged(asset_id, res)
+def assign(slot, asset_id, res, scope=None, stage_id=None, label=None):
+    src = os.path.join(STAGING, stage_id) if stage_id else staged(asset_id, res)
     undo_id = backup(slot, scope)
     d = slot_dir(slot, scope)
     os.makedirs(d, exist_ok=True)
@@ -285,8 +366,10 @@ def assign(slot, asset_id, res, scope=None):
             os.remove(os.path.join(d, f))
     for f in os.listdir(src):
         shutil.copy2(os.path.join(src, f), d)
-    json.dump({'asset': asset_id, 'resolution': res, 'source': 'https://ambientcg.com/view?id=' + asset_id},
-              open(os.path.join(d, 'source.json'), 'w'))
+    source = ({'asset': label or 'Your texture', 'resolution': '%dpx' % Image.open(os.path.join(src, 'albedo.png')).width,
+               'source': None} if stage_id else
+              {'asset': asset_id, 'resolution': res, 'source': 'https://ambientcg.com/view?id=' + asset_id})
+    json.dump(source, open(os.path.join(d, 'source.json'), 'w'))
     settings_path = os.path.join(d, 'settings.json')
     if not os.path.exists(settings_path):
         json.dump({'tint_strength': 1.0 if slot in TINTED_BY_DEFAULT else 0.0, 'tile_size': 200},
@@ -312,6 +395,34 @@ def save_settings(slot, values, scope=None):
             clean[k] = float(v)
     os.makedirs(slot_dir(slot, scope), exist_ok=True)
     json.dump(clean, open(os.path.join(slot_dir(slot, scope), 'settings.json'), 'w'))
+
+
+_PREVIEWS = {}
+
+
+def preview_png(path):
+    """512px PNG of a texture for the page, cached until the file changes."""
+    key = (path, os.path.getmtime(path))
+    if key not in _PREVIEWS:
+        img = Image.open(path).convert('RGB')
+        img.thumbnail((512, 512))
+        buf = io.BytesIO()
+        img.save(buf, 'PNG', compress_level=1)
+        if len(_PREVIEWS) > 200:
+            _PREVIEWS.clear()
+        _PREVIEWS[key] = buf.getvalue()
+    return _PREVIEWS[key]
+
+
+def clean_staging(max_age_days=7):
+    """Delete downloaded/converted try-outs not used for a week (applied textures live in textures/)."""
+    if not os.path.isdir(STAGING):
+        return
+    cutoff = time.time() - max_age_days * 86400
+    for d in os.listdir(STAGING):
+        full = os.path.join(STAGING, d)
+        if os.path.getmtime(full) < cutoff:
+            shutil.rmtree(full, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- build jobs
@@ -403,11 +514,7 @@ class Handler(BaseHTTPRequestHandler):
                     path = os.path.join(STAGING, m.group(2), m.group(3) + '.png')
                 if not path or not os.path.exists(path):
                     return self.send(404, {'error': 'no texture'})
-                img = Image.open(path).convert('RGB')
-                img.thumbnail((512, 512))
-                buf = io.BytesIO()
-                img.save(buf, 'PNG')
-                return self.send(200, buf.getvalue(), 'image/png')
+                return self.send(200, preview_png(path), 'image/png')
             self.send(404, {'error': 'not found'})
         except Exception as e:
             self.send(500, {'error': str(e)})
@@ -426,6 +533,16 @@ class Handler(BaseHTTPRequestHandler):
                     result.update(id=os.path.basename(d), maps=sorted(os.path.splitext(f)[0] for f in os.listdir(d)))
                 else:
                     result['undo'] = assign(self.slot_arg(body['slot']), asset, body['resolution'], scope)
+            elif self.path == '/api/upload':
+                import base64
+                files = {f['name']: base64.b64decode(f['data']) for f in body['files']}
+                stage_id, label = stage_upload(files)
+                d = os.path.join(STAGING, stage_id)
+                result.update(id=stage_id, label=label, maps=sorted(os.path.splitext(f)[0] for f in os.listdir(d)))
+            elif self.path == '/api/assign_upload':
+                if not re.fullmatch(r'upload_\d+', body['id']) or not os.path.isdir(os.path.join(STAGING, body['id'])):
+                    raise ValueError('That upload has expired - drop the files again')
+                result['undo'] = assign(self.slot_arg(body['slot']), None, None, scope, body['id'], body.get('label'))
             elif self.path == '/api/settings':
                 save_settings(self.slot_arg(body['slot']), body['settings'], scope)
             elif self.path == '/api/clear':
@@ -449,6 +566,7 @@ def main():
         print('Texture Studio is already running - opening %s' % url)
         webbrowser.open(url)
         return
+    clean_staging()
     print('Texture Studio running at %s  (Ctrl+C to stop)' % url)
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
