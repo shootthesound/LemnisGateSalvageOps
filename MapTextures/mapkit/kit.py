@@ -15,6 +15,8 @@
                                             EVA or ASN
     python mapkit/kit.py list               your maps and mode changes
     python mapkit/kit.py remove <Name>      delete one of your maps (frees its slot)
+    python mapkit/kit.py light <Map|Name> [--quality Medium]
+                                            bake lighting for a level (Lightmass; packed with it from then on)
     python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
 
 The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
@@ -519,6 +521,32 @@ def game_instance(paks):
     return ml.write(extra)
 
 
+def level_of(args, name):
+    """A kit level's /Game path from one of your map names (SO_Yard) or a game map name (CTF_Arches)."""
+    m = registry()['maps'].get(name)
+    if m:
+        return m['slot']
+    for l in kit_levels():
+        if l.rsplit('/', 1)[1][:-5].lower() == name.lower():
+            return '/Game/' + l[:-5]
+    sys.exit('No level %s in the kit (see: kit.py list, or import it first)' % name)
+
+
+def bake_lighting(args):
+    """Bake a level's lighting with Lightmass. The result (<Level>_BuiltData) is packed with the level from then on;
+    the game's own meshes use the same lightmap UVs, so it fits them."""
+    level = level_of(args, args.map)
+    editor, _ = build.engine_tools(args.ue)
+    print('Baking lighting for %s (%s quality; can take a while on big maps)' % (level, args.quality))
+    run([editor, UPROJECT, '-run=ResavePackages', '-BuildLighting', '-Quality=' + args.quality,
+         '-Map=' + level.rsplit('/', 1)[1],
+         '-AllowCommandletRendering', '-IgnoreChangelist', '-SCCProvider=None'] + COMMON, 'mapkit_light.log')
+    built = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '_BuiltData.uasset')
+    if not os.path.exists(built):
+        sys.exit('No lighting data was made - see %s' % os.path.join(LOGS, 'mapkit_light.log'))
+    print('Baked: %s. Build to pack it.' % built)
+
+
 def kit_levels():
     """Levels in the kit project, as content-relative paths (Levels/Playable/CTF_Arches.umap)."""
     content = os.path.join(PROJECT, 'Content')
@@ -526,6 +554,12 @@ def kit_levels():
     for root, _, files in os.walk(content):
         out += [os.path.relpath(os.path.join(root, f), content).replace(os.sep, '/') for f in files if f.endswith('.umap')]
     return sorted(l for l in out if not l.startswith('MapKit/'))  # the kit's own levels (object library) stay home
+
+
+def built_data(cooked, level):
+    """Cooked files of a level's baked lighting, if it has any."""
+    base = os.path.join(cooked, 'LemnisGate', 'Content', level[:-5].replace('/', os.sep) + '_BuiltData')
+    return [base + ext for ext in ('.uasset', '.uexp', '.ubulk') if os.path.exists(base + ext)]
 
 
 def build_maps(args):
@@ -544,10 +578,13 @@ def build_maps(args):
     textures = os.path.join(build.OUT, build.PAK_NAME)
     # The kit's own assets (terrain materials and anything you make under /Game/SalvageOps) ship in the pak.
     own = verify.CookedFolder(cooked, 'SalvageOps')
-    checker = verify.Checker([own] + ([pakfile.Pak(textures)] if os.path.exists(textures) else []) + paks,
+    lighting = verify.CookedFolder(cooked, 'Levels')  # the levels' own baked lighting (<Level>_BuiltData)
+    lighting.files = {k: v for k, v in lighting.files.items() if '_BuiltData.' in k}
+    checker = verify.Checker([own, lighting] + ([pakfile.Pak(textures)] if os.path.exists(textures) else []) + paks,
                              os.path.join(game, 'LemnisGate', 'Binaries', 'Win64', 'LemnisGate-Win64-Shipping.exe'))
     bad = False
     to_check = [l[:-5] + '.umap' for l in levels]
+    to_check += [l[:-5] + '_BuiltData.uasset' for l in levels if built_data(cooked, l)]
     to_check += [f[len('LemnisGate/Content/'):] for f in own.files if f.endswith('.uasset')]
     for rel in to_check:
         base = os.path.join(cooked, 'LemnisGate', 'Content', os.path.splitext(rel)[0].replace('/', os.sep))
@@ -578,6 +615,8 @@ def build_maps(args):
                 sys.exit('Cook did not produce %s - see %s' % (l, os.path.join(LOGS, 'mapkit_cook.log')))
             for src in files:
                 f.write('"%s" "../../../LemnisGate/Content/%s"\n' % (src, l[:-5] + os.path.splitext(src)[1]))
+            for src in built_data(cooked, l):
+                f.write('"%s" "../../../LemnisGate/Content/%s"\n' % (src, l[:-5] + '_BuiltData' + os.path.splitext(src)[1]))
         for name, src in sorted(own.files.items()):
             f.write('"%s" "../../../%s"\n' % (src, name))
     os.makedirs(build.OUT, exist_ok=True)
@@ -595,7 +634,7 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'build'])
+    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'light', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
@@ -603,6 +642,8 @@ def main():
     ap.add_argument('--from', dest='source', help='new: the map to start from')
     ap.add_argument('--mode', help='new: game mode (CTF, CAP, DM, DST, EVA, ASN; default: the source map\'s)')
     ap.add_argument('--title', help='new: the name shown in game')
+    ap.add_argument('--quality', default='Medium', choices=['Preview', 'Medium', 'High', 'Production'],
+                    help='light: Lightmass quality')
     ap.add_argument('--as', dest='as_map', help='import: save as this map instead (its place in the game)')
     ap.add_argument('--gameplay-only', action='store_true', help='import: leave out the level geometry')
     ap.add_argument('--no-terrain', action='store_true', help='import/new: leave out the terrain')
@@ -610,10 +651,10 @@ def main():
     ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
     ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
     args = ap.parse_args()
-    if args.command in ('import', 'new', 'mode', 'remove') and not args.map:
+    if args.command in ('import', 'new', 'mode', 'remove', 'light') and not args.map:
         ap.error('%s needs a map name' % args.command)
     {'setup': setup, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
-     'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'build': build_maps}[args.command](args)
+     'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'light': bake_lighting, 'build': build_maps}[args.command](args)
 
 
 if __name__ == '__main__':

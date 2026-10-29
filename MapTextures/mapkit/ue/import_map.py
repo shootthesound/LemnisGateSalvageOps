@@ -137,7 +137,7 @@ def snap_near(actor, start, rings=8, step=200.0):
 def main():
     scene, level = JOB['scene'], JOB['level']
     actors = scene['actors']
-    made = placeholders(actors)
+    made = placeholders([actors, scene.get('foliage', [])])
     log('%d placeholders' % len(made))
     world = LIB.create_level(level)
     spawned, failed, snap = 0, {}, []
@@ -172,6 +172,7 @@ def main():
         actor = LIB.spawn_instanced_mesh(world, name, mesh, materials, f['file'], convert('Vector', f['location']),
                                          f['cull'][0], f['cull'][1], f['collision'])
         if actor:
+            apply_props(actor.root_component, f.get('props', {}))
             spawned += 1
         else:
             failed[name] = 'foliage failed'

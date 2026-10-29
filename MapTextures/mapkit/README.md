@@ -122,9 +122,16 @@ The kit's terrain materials and textures go into the maps pak, adding about 45 M
   the editor would call an event they don't have.
 - **Spawn points need a team.** Select one and set **Team Side** to Attacker or Defender. The `*_Box` maps show the
   usual count: five per team, plus two observer spawns.
-- **Lighting is dynamic.** Lights work as placed, with no lighting build. The prototype arenas are lit the same way.
-  The finished maps (CTF_TheNest, DM_Trident, CAP_Chimera and the others in `Levels/CAPMap`, `CTFMap`, `DSTMap`) use
-  baked lighting that the kit doesn't carry over yet, so rebuilt copies of them look flatter.
+- **Bake lighting for finished-looking maps.**
+  - Without a bake, lights work as placed, which is how the prototype arenas are lit.
+  - The finished maps (CTF_TheNest, DM_Trident, CAP_Chimera and the others in `Levels/CAPMap`, `CTFMap`, `DSTMap`) use
+    baked lighting, so give your copies of them a bake: `python mapkit/kit.py light SO_Trident`.
+  - The bake uses Lightmass at Medium quality by default. Pass `--quality Production` for the best result.
+  - The result is packed with the map from then on. Bake again after editing.
+  - It takes about a minute for Trident and adds about 80 MB to the pak.
+  - Shadows, bounced light and performance match the game's own maps.
+  - Your own materials need **Used with Static Lighting** ticked to show on baked surfaces. Without it the game draws
+    its grid pattern instead. The kit's terrain materials already have it.
 - **Foliage** is rebuilt as instanced meshes of the game's own plants and rocks (`--no-foliage` / `--no-terrain` leave them out).
 - **If the game crashes once while loading a new map** (in `dxilconv`, Windows' DirectX 12 shader converter), try again. It happened once while compiling a new map's shaders and didn't repeat. Adding `-dx11` to the shortcut avoids it.
 - **Not wired up yet:** capture turrets and the reset-loop button (their interaction events).

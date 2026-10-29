@@ -62,6 +62,10 @@ def master(defaults):
     if ASSETS.does_asset_exist(path):
         ASSETS.delete_asset(path)
     m = TOOLS.create_asset('M_Terrain', ROOT, unreal.Material, unreal.MaterialFactoryNew())
+    # Cooking only compiles the shader variants a material is flagged for; without this, terrain with baked lighting
+    # has no shaders in game and shows the engine's grid. (The editor would set it when used, but never saves it here.)
+    m.set_editor_property('used_with_static_lighting', True)
+    m.set_editor_property('used_with_instanced_static_meshes', True)
     # World-space UVs: XY / tile size.
     world = expr(m, unreal.MaterialExpressionWorldPosition, -1400, 0)
     xy = expr(m, unreal.MaterialExpressionComponentMask, -1200, 0, r=True, g=True, b=False, a=False)

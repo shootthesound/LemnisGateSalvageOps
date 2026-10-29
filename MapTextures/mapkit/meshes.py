@@ -35,6 +35,9 @@ class Mesh:
         props = pkg._props(r)
         self.slots = [m.get('MaterialSlotName') or 'Slot%d' % i for i, m in enumerate(props.get('StaticMaterials') or [])]
         self.materials = [self._material(m.get('MaterialInterface')) for m in props.get('StaticMaterials') or []]
+        # Baked lighting maps onto this UV channel at this resolution (the game's meshes all have one).
+        self.lightmap_index = props.get('LightMapCoordinateIndex') or 0
+        self.lightmap_resolution = props.get('LightMapResolution') or 4
         r.o += 4      # no object GUID
         r.raw(2)      # strip flags
         r.raw(4 * 3)  # bCooked, BodySetup, NavCollision
@@ -95,13 +98,17 @@ class Mesh:
                 z = tangents[i * tsize + 4:i * tsize + 8]
                 self.normals.append(tuple((b - 127.5) / 127.5 for b in z[:3]))
         usize = 8 if full_uvs else 4
-        self.uvs = []
-        for i in range(n):
-            o = (i * uv_count) * usize
-            if full_uvs:
-                self.uvs.append(struct.unpack_from('<2f', uvs, o))
-            else:
-                self.uvs.append(tuple(half(h) for h in struct.unpack_from('<2H', uvs, o)))
+        self.uv_channels = []  # [[(u, v) per vertex] per channel]
+        for ch in range(uv_count):
+            channel = []
+            for i in range(n):
+                o = (i * uv_count + ch) * usize
+                if full_uvs:
+                    channel.append(struct.unpack_from('<2f', uvs, o))
+                else:
+                    channel.append(tuple(half(h) for h in struct.unpack_from('<2H', uvs, o)))
+            self.uv_channels.append(channel)
+        self.uvs = self.uv_channels[0]
         # FColorVertexBuffer
         r.raw(2)
         cstride, cn = r.i32(), r.i32()
@@ -117,12 +124,16 @@ class Mesh:
 
     def write(self, path):
         """Simple binary file MapKitLibrary.ImportMesh reads (all little-endian):
-        vertex count, positions (3f), normals (3f), UV0 (2f); slot count, per slot name (int length + UTF-8) and
-        material path; section count, per section (material slot, first index, triangle count); index count, indices."""
+        vertex count, positions (3f), normals (3f); UV channel count, per channel UVs (2f); lightmap UV channel and
+        resolution; slot count, per slot name (int length + UTF-8) and material path; section count, per section
+        (material slot, first index, triangle count); index count, indices."""
         out = [struct.pack('<i', len(self.positions))]
         out += [struct.pack('<3f', *p) for p in self.positions]
         out += [struct.pack('<3f', *v) for v in self.normals]
-        out += [struct.pack('<2f', *uv) for uv in self.uvs]
+        out.append(struct.pack('<i', len(self.uv_channels)))
+        for channel in self.uv_channels:
+            out += [struct.pack('<2f', *uv) for uv in channel]
+        out.append(struct.pack('<ii', self.lightmap_index, self.lightmap_resolution))
 
         def text(s):
             b = (s or '').encode('utf-8')

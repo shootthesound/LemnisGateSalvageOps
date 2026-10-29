@@ -46,6 +46,13 @@ def foliage(sc):
             'mesh': mesh['path'],
             'materials': ['%s.%s' % (m['path'], m.get('object') or m['path'].rsplit('/', 1)[1]) if m else None
                           for m in mats],
+            'material_refs': [m for m in mats if m],  # so the import can make stand-ins for ones the kit lacks
+            # Everything else the component saved (lightmap resolution, lighting flags, ...), applied as-is.
+            'props': {k: (t, v) for k, (t, v) in props.items()
+                      if k not in ('StaticMesh', 'OverrideMaterials', 'AttachParent', 'NumBuiltInstances',
+                                   'InstanceCountToRender', 'InstancingRandomSeed', 'bHasPerInstanceHitProxies',
+                                   'VisibilityId', 'RelativeLocation', 'InstanceStartCullDistance',
+                                   'InstanceEndCullDistance') and not isinstance(v, (list, dict))},
             'instances': instances(pkg, i, count),
             'cull': (props.get('InstanceStartCullDistance', (None, 0))[1],
                      props.get('InstanceEndCullDistance', (None, 0))[1]),

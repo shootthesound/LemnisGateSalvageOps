@@ -368,13 +368,25 @@ bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
 	int32 NumVertices = 0;
 	Ar << NumVertices;
 	TArray<FVector> Positions, Normals;
-	TArray<FVector2D> UVs;
 	Positions.SetNumUninitialized(NumVertices);
 	Normals.SetNumUninitialized(NumVertices);
-	UVs.SetNumUninitialized(NumVertices);
 	Ar.Serialize(Positions.GetData(), NumVertices * sizeof(FVector));
 	Ar.Serialize(Normals.GetData(), NumVertices * sizeof(FVector));
-	Ar.Serialize(UVs.GetData(), NumVertices * sizeof(FVector2D));
+	int32 NumUVChannels = 0;
+	Ar << NumUVChannels;
+	if (NumUVChannels < 1 || NumUVChannels > 8)
+	{
+		return false;
+	}
+	TArray<TArray<FVector2D>> UVs;
+	UVs.SetNum(NumUVChannels);
+	for (TArray<FVector2D>& Channel : UVs)
+	{
+		Channel.SetNumUninitialized(NumVertices);
+		Ar.Serialize(Channel.GetData(), NumVertices * sizeof(FVector2D));
+	}
+	int32 LightMapIndex = 0, LightMapResolution = 4;
+	Ar << LightMapIndex << LightMapResolution;
 	int32 NumSlots = 0;
 	Ar << NumSlots;
 	TArray<FName> SlotNames;
@@ -416,7 +428,7 @@ bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
 	TVertexInstanceAttributesRef<FVector> InstanceNormals = Attributes.GetVertexInstanceNormals();
 	TVertexInstanceAttributesRef<FVector2D> InstanceUVs = Attributes.GetVertexInstanceUVs();
 	TPolygonGroupAttributesRef<FName> GroupSlots = Attributes.GetPolygonGroupMaterialSlotNames();
-	InstanceUVs.SetNumIndices(1);
+	InstanceUVs.SetNumIndices(NumUVChannels);
 	TArray<FVertexInstanceID> Instances;
 	for (int32 i = 0; i < NumVertices; ++i)
 	{
@@ -424,7 +436,10 @@ bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
 		VertexPositions[Vertex] = Positions[i];
 		const FVertexInstanceID Instance = Description.CreateVertexInstance(Vertex);
 		InstanceNormals[Instance] = Normals[i];
-		InstanceUVs.Set(Instance, 0, UVs[i]);
+		for (int32 Channel = 0; Channel < NumUVChannels; ++Channel)
+		{
+			InstanceUVs.Set(Instance, Channel, UVs[Channel][i]);
+		}
 		Instances.Add(Instance);
 	}
 	for (const FIntVector& S : Sections)
@@ -479,6 +494,9 @@ bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
 	Source.BuildSettings.bRecomputeTangents = true;
 	Source.BuildSettings.bGenerateLightmapUVs = false;
 	Source.BuildSettings.bRemoveDegenerates = true;
+	// The game's lightmap UVs and resolution, so lighting baked in the kit fits the game's own meshes.
+	Mesh->LightMapCoordinateIndex = FMath::Clamp(LightMapIndex, 0, NumUVChannels - 1);
+	Mesh->LightMapResolution = LightMapResolution;
 	Mesh->CreateMeshDescription(0, MoveTemp(Description));
 	Mesh->CommitMeshDescription(0);
 	Mesh->CreateBodySetup();
