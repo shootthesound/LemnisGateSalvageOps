@@ -100,13 +100,19 @@ section:last-child { border-right: 0; }
 
 /* editor */
 #editor { padding: 0 16px 16px; }
-#viewWrap { position: relative; border-radius: var(--radius); overflow: hidden; background: #0a0e14; border: 1px solid var(--line); aspect-ratio: 4 / 3; max-height: 46vh; width: 100%; }
+#viewWrap { position: relative; border-radius: var(--radius); overflow: hidden; background: #0a0e14; border: 1px solid var(--line); aspect-ratio: 4 / 3; max-height: 52vh; width: 100%; }
 #view { width: 100%; height: 100%; display: block; cursor: grab; }
 #view:active { cursor: grabbing; }
 .viewbar { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; }
 .viewbar button { padding: 4px 9px; font-size: 12px; background: rgba(21,27,36,.85); }
 .viewbar button.on, #tryCompare.on { border-color: var(--accent); color: var(--accent2); }
-#viewHint { position: absolute; right: 10px; top: 12px; font-size: 11px; color: var(--dim); pointer-events: none; }
+#viewHint { position: absolute; left: 10px; bottom: 10px; font-size: 11px; color: #c9d4e0; pointer-events: none; background: rgba(13,17,23,.7);
+  padding: 3px 8px; border-radius: 6px; transition: opacity .6s; }
+#viewHint.faded { opacity: 0; }
+#tryBar ~ #viewHint, #viewWrap.trying #viewHint { display: none; }
+#viewTip { display: none; position: absolute; pointer-events: none; background: rgba(21,27,36,.92); border: 1px solid var(--accent);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+#view:focus { outline: none; }
 #tryBar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   background: rgba(21,27,36,.94); border: 1px solid var(--accent); border-radius: 8px; }
 #tryBar img { width: 34px; height: 34px; border-radius: 6px; }
@@ -217,10 +223,14 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
         <canvas id="view"></canvas>
         <div class="viewbar" id="shapes">
           <button data-shape="room" class="on">Room</button><button data-shape="block">Block</button><button data-shape="sphere">Sphere</button>
+          <button data-shape="map" title="Fly around a real map with the current textures">Map</button>
+          <select id="mapPick" style="display:none;padding:3px 6px;font-size:12px;max-width:170px"></select>
+          <button id="viewReset" style="display:none" title="Back to the overview (R)">⟲</button>
         </div>
         <div id="viewEmpty"></div>
         <div id="tryBar" style="display:none"></div>
         <div id="viewHint">Drag to orbit · scroll to zoom</div>
+        <div id="viewTip"></div>
       </div>
       <div class="slotTitle"><h3 id="slotName"></h3><span id="slotBadges"></span></div>
       <p class="note" id="slotNote"></p>
@@ -476,6 +486,8 @@ $('#allowShared').checked = store.get('shared') === '1';
 $('#allowShared').onchange = ev => { store.set('shared', ev.target.checked ? '1' : '0'); loadSlots(); };
 
 // ------------------------------------------------------------------ 3D preview
+// One material ("look") per slot, shared by the sample shapes and the map fly-through. UVs are in metres so
+// texture repeat = 1 / tile size, matching the in-game world-aligned projection.
 const preview = (() => {
   const canvas = $('#view');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -486,7 +498,8 @@ const preview = (() => {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0e14);
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 2000);
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
   // Soft studio environment so metals have something to reflect.
   const envScene = new THREE.Scene();
@@ -498,177 +511,360 @@ const preview = (() => {
   }
   envGeo.setAttribute('color', new THREE.Float32BufferAttribute(envCols, 3));
   envScene.add(new THREE.Mesh(envGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(envScene, 0.04).texture;
 
   scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20242c, 0.35));
   const sun = new THREE.DirectionalLight(0xfff1e0, 1.8);
-  sun.position.set(6, 10, 3); sun.castShadow = true;
+  sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.02;
-  Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 30 });
-  scene.add(sun);
+  scene.add(sun); scene.add(sun.target);
+  function aimSun(center, radius) {
+    sun.position.set(center.x + radius * 0.6, center.y + radius * 1.2, center.z + radius * 0.35);
+    sun.target.position.copy(center);
+    Object.assign(sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: 0.5, far: radius * 4 });
+    sun.shadow.camera.updateProjectionMatrix();
+  }
 
   const loader = new THREE.TextureLoader();
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0 });
-  const group = new THREE.Group(); scene.add(group);
-  const meshes = [];
-  let tile = 2, shape = store.get('shape') || 'room', albedoImg = null, albedoCanvas = null, albedoTex = null, meanLum = 0.5;
-  let slotKey = '', loadToken = 0, current = null;
+  function texture(url) {
+    return new Promise((res, rej) => loader.load(url, t => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso; res(t); }, undefined, rej));
+  }
+  const lut = new Float32Array(256); for (let i = 0; i < 256; i++) lut[i] = srgb2lin(i / 255);
 
-  // Box with UVs measured in metres so the texture tiles at world scale, like the in-game projection.
-  function box(w, h, d, x, y, z) {
-    const g = new THREE.BoxGeometry(w, h, d);
+  // ---- per-slot looks
+  class Look {
+    constructor() { this.mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0 }); this.key = ''; this.token = 0; this.img = null; this.tex = null; this.mean = 0.5; this.tile = 2; }
+    async load(slot, src, settings) {
+      if (src.key === this.key) { this.update(settings); return; }
+      this.key = src.key; const token = ++this.token, m = this.mat;
+      [m.normalMap, m.roughnessMap].forEach(t => t && t.dispose());
+      if (this.tex) { this.tex.dispose(); this.tex = null; }
+      this.img = null; this.canvas = null;
+      m.map = m.normalMap = m.roughnessMap = m.metalnessMap = m.aoMap = null;
+      if (!src.maps.length) {
+        m.color.setRGB(...slot.color); m.roughness = 0.5; m.metalness = 0; m.needsUpdate = true; return;
+      }
+      const [img, normal, orm] = await Promise.all([
+        new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src.url('albedo'); }),
+        src.maps.includes('normal') ? texture(src.url('normal')) : null,
+        src.maps.includes('orm') ? texture(src.url('orm')) : null,
+      ]);
+      if (token !== this.token) return;
+      this.img = img;
+      // Mean linear luminance of the albedo, matching what the build measures.
+      const c = document.createElement('canvas'); c.width = c.height = 64;
+      const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, 64, 64);
+      const px = cx.getImageData(0, 0, 64, 64).data; let sum = 0;
+      for (let i = 0; i < px.length; i += 4) sum += 0.2126 * lut[px[i]] + 0.7152 * lut[px[i + 1]] + 0.0722 * lut[px[i + 2]];
+      this.mean = Math.max(sum / (px.length / 4), 0.01);
+      m.color.setRGB(1, 1, 1);
+      m.normalMap = normal; m.roughnessMap = orm; m.metalnessMap = orm; m.aoMap = orm;
+      this.update(settings);
+    }
+    // Same maths as the game shader: lerp(albedo, colour * luminance / meanLuminance, tint).
+    retint(e) {
+      const img = this.img, w = img.width, h = img.height;
+      if (!this.canvas) { this.canvas = document.createElement('canvas'); this.canvas.width = w; this.canvas.height = h; }
+      const ctx = this.canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      if (e.tint_strength > 0) {
+        const d = ctx.getImageData(0, 0, w, h), px = d.data, s = e.tint_strength, col = e.color, mean = this.mean;
+        for (let i = 0; i < px.length; i += 4) {
+          const r = lut[px[i]], g = lut[px[i + 1]], b = lut[px[i + 2]];
+          const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / mean;
+          px[i] = lin2srgb(r + (col[0] * l - r) * s) * 255;
+          px[i + 1] = lin2srgb(g + (col[1] * l - g) * s) * 255;
+          px[i + 2] = lin2srgb(b + (col[2] * l - b) * s) * 255;
+        }
+        ctx.putImageData(d, 0, 0);
+      }
+      if (!this.tex) {
+        this.tex = new THREE.CanvasTexture(this.canvas);
+        this.tex.wrapS = this.tex.wrapT = THREE.RepeatWrapping; this.tex.encoding = THREE.sRGBEncoding; this.tex.anisotropy = maxAniso;
+      }
+      this.tex.needsUpdate = true;
+      this.mat.map = this.tex;
+    }
+    update(e) {
+      if (!e || !this.img) return;
+      const m = this.mat;
+      this.tile = e.tile_size / 100;
+      m.roughness = e.roughness; m.metalness = e.metallic;
+      if (m.normalMap) m.normalScale.set(e.normal_strength, -e.normal_strength); // DirectX normal maps
+      this.retint(e);
+      [m.map, m.normalMap, m.roughnessMap].forEach(t => t && t.repeat.set(1 / this.tile, 1 / this.tile));
+      m.needsUpdate = true;
+    }
+  }
+  const looks = {};
+  const look = name => looks[name] || (looks[name] = new Look());
+  const plainMat = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness: 0.8 });
+  const ownSrc = s => ({ key: (scope || '') + ':' + s.name + ':' + s.stamp, url: k => texUrl(s, k), maps: s.maps });
+
+  // ---- geometry
+  const geoCache = {};
+  // Unit box whose UVs are scaled by its final size in metres (w, h, d), so tiling is in world units.
+  function unitBox(w, h, d) {
+    const k = [w, h, d].map(v => v.toFixed(3)).join(',');
+    if (geoCache[k]) return geoCache[k];
+    const g = new THREE.BoxGeometry(1, 1, 1);
     const dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
     const uv = g.attributes.uv;
-    for (let f = 0; f < 6; f++) for (let v = 0; v < 4; v++) {
-      const i = f * 4 + v; uv.setXY(i, uv.getX(i) * dims[f][0], uv.getY(i) * dims[f][1]);
-    }
+    for (let f = 0; f < 6; f++) for (let v = 0; v < 4; v++) { const i = f * 4 + v; uv.setXY(i, uv.getX(i) * dims[f][0], uv.getY(i) * dims[f][1]); }
     g.setAttribute('uv2', uv.clone());
-    const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; return m;
+    return geoCache[k] = g;
+  }
+  function box(w, h, d, x, y, z) {
+    const m = new THREE.Mesh(unitBox(w, h, d)); m.scale.set(w, h, d); m.position.set(x, y, z); return m;
   }
   function sphere(r) {
     const g = new THREE.SphereGeometry(r, 96, 48);
     const uv = g.attributes.uv;
     for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2 * Math.PI * r, uv.getY(i) * Math.PI * r);
     g.setAttribute('uv2', uv.clone());
-    const m = new THREE.Mesh(g, mat); m.castShadow = m.receiveShadow = true; return m;
+    return new THREE.Mesh(g);
   }
-  // Greybox-style corner: floor, two walls, a pillar, a crate and a ramp, at roughly in-game scale (metres).
-  function ramp() {
-    const m = box(1.6, 0.25, 3, 2.3, 0.6, -1.6); m.rotation.x = -0.4; return m;
-  }
-  const SHAPES = {
+  const SAMPLES = {
     room: { build: () => [box(8, 0.2, 8, 0, -0.1, 0), box(8, 4, 0.3, 0, 2, -4), box(0.3, 4, 8, -4, 2, 0),
-                          box(1, 3, 1, 0.6, 1.5, 0.6), box(2, 1, 2, -2.2, 0.5, -2.2), ramp()],
+                          box(1, 3, 1, 0.6, 1.5, 0.6), box(2, 1, 2, -2.2, 0.5, -2.2), (() => { const m = box(1.6, 0.25, 3, 2.3, 0.6, -1.6); m.rotation.x = -0.4; return m; })()],
             cam: [9.5, 6, 9.5], target: [-0.8, 0.9, -0.8] },
     block: { build: () => [box(2, 2, 2, 0, 0, 0)], cam: [3.6, 2.6, 3.6], target: [0, 0, 0] },
     sphere: { build: () => [sphere(1.2)], cam: [2.9, 1.5, 2.9], target: [0, 0, 0] },
   };
+
+  // Unreal (cm, X forward, Y right, Z up) -> three.js (m, Y up). Swapping Y/Z also converts handedness.
+  const S = v => new THREE.Vector3(v[0] / 100, v[2] / 100, v[1] / 100);
+  function mapMesh(sh) {
+    const [sx, sy, sz] = sh.scale.map(Math.abs);
+    const w = sx, d = sy, h = sh.shape === 'plane' ? 0.002 : sz;   // three local (x, y, z) = UE local (x, z, y)
+    const m = new THREE.Mesh(unitBox(w, h, d));
+    const c0 = S(sh.rot[0].map(v => v * 100)).multiplyScalar(w), c1 = S(sh.rot[2].map(v => v * 100)).multiplyScalar(h), c2 = S(sh.rot[1].map(v => v * 100)).multiplyScalar(d);
+    m.matrixAutoUpdate = false;
+    m.matrix.makeBasis(c0, c1, c2).setPosition(S(sh.loc));
+    m.userData.slot = sh.slot;
+    return m;
+  }
+
+  // ---- scene state
+  const group = new THREE.Group(); scene.add(group);
+  let meshes = [], mode = store.get('shape') || 'room', current = null, currentSrc = null, mapName = null, mapToken = 0;
   let orbit = { theta: 0.8, phi: 1.1, dist: 10, target: new THREE.Vector3() };
+  const fly = { pos: new THREE.Vector3(), yaw: 0, pitch: -0.3, speed: 12, keys: new Set() };
 
-  function setShape(name) {
-    shape = name; store.set('shape', name);
-    meshes.forEach(m => { group.remove(m); m.geometry.dispose(); }); meshes.length = 0;
-    SHAPES[name].build().forEach(m => { meshes.push(m); group.add(m); });
-    const c = new THREE.Vector3(...SHAPES[name].cam), t = new THREE.Vector3(...SHAPES[name].target);
-    const off = c.clone().sub(t);
+  function clear() { meshes.forEach(m => group.remove(m)); meshes = []; }
+  function applyMaterials() {
+    for (const m of meshes) {
+      const slotName = mode === 'map' ? m.userData.slot : current && current.name;
+      m.material = slotName ? look(slotName).mat : plainMat;
+      m.castShadow = m.receiveShadow = true;
+    }
+  }
+  function setSample(name) {
+    clear();
+    SAMPLES[name].build().forEach(m => { meshes.push(m); group.add(m); });
+    const c = new THREE.Vector3(...SAMPLES[name].cam), t = new THREE.Vector3(...SAMPLES[name].target), off = c.clone().sub(t);
     orbit = { theta: Math.atan2(off.x, off.z), phi: Math.acos(off.y / off.length()), dist: off.length(), target: t };
+    aimSun(new THREE.Vector3(0, 0, 0), 8);
+    applyMaterials();
+  }
+
+  async function setMode(name) {
+    mode = name; store.set('shape', name);
     document.querySelectorAll('#shapes button').forEach(b => b.classList.toggle('on', b.dataset.shape === name));
-    applyTile();
-  }
-  document.querySelectorAll('#shapes button').forEach(b => b.onclick = () => setShape(b.dataset.shape));
-
-  function applyTile() {
-    [mat.map, mat.normalMap, mat.roughnessMap].forEach(t => { if (t) { t.repeat.set(1 / tile, 1 / tile); } });
-  }
-
-  function texture(url, srgb) {
-    return new Promise((res, rej) => loader.load(url, t => {
-      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
-      if (srgb) t.encoding = THREE.sRGBEncoding; res(t);
-    }, undefined, rej));
-  }
-
-  // Same maths as the game shader: lerp(albedo, colour * luminance / meanLuminance, tint).
-  function retint(e) {
-    if (!albedoImg) return;
-    const w = albedoImg.width, h = albedoImg.height;
-    if (!albedoCanvas) { albedoCanvas = document.createElement('canvas'); albedoCanvas.width = w; albedoCanvas.height = h; }
-    const ctx = albedoCanvas.getContext('2d');
-    ctx.drawImage(albedoImg, 0, 0, w, h);
-    if (e.tint_strength > 0) {
-      const d = ctx.getImageData(0, 0, w, h), px = d.data, s = e.tint_strength, col = e.color;
-      const lut = new Float32Array(256); for (let i = 0; i < 256; i++) lut[i] = srgb2lin(i / 255);
-      for (let i = 0; i < px.length; i += 4) {
-        const r = lut[px[i]], g = lut[px[i + 1]], b = lut[px[i + 2]];
-        const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / meanLum;
-        px[i] = lin2srgb(r + (col[0] * l - r) * s) * 255;
-        px[i + 1] = lin2srgb(g + (col[1] * l - g) * s) * 255;
-        px[i + 2] = lin2srgb(b + (col[2] * l - b) * s) * 255;
-      }
-      ctx.putImageData(d, 0, 0);
-    }
-    if (!albedoTex) {
-      albedoTex = new THREE.CanvasTexture(albedoCanvas);
-      albedoTex.wrapS = albedoTex.wrapT = THREE.RepeatWrapping; albedoTex.encoding = THREE.sRGBEncoding;
-      albedoTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    }
-    albedoTex.needsUpdate = true;
-    mat.map = albedoTex; applyTile(); mat.needsUpdate = true;
-  }
-
-  // Show a slot's own textures, or a staged library material (src = {key, base, maps}) with the slot's settings.
-  async function setSlot(s, src) {
-    current = s;
-    src = src || { key: (scope || '') + ':' + s.name + ':' + s.stamp, url: k => texUrl(s, k), maps: s.maps };
-    const key = src.key;
-    if (key === slotKey) { update(s.effective || defaultsFor(s)); return; }
-    slotKey = key; const token = ++loadToken;
-    [mat.map, mat.normalMap, mat.roughnessMap].forEach(t => t && t !== albedoTex && t.dispose());
-    if (albedoTex) { albedoTex.dispose(); albedoTex = null; } albedoCanvas = null; albedoImg = null;
-    mat.map = mat.normalMap = mat.roughnessMap = mat.metalnessMap = mat.aoMap = null;
-    if (!src.maps.length) {
-      mat.color.setRGB(...s.color); mat.roughness = 0.5; mat.metalness = 0; mat.needsUpdate = true;
-      $('#viewEmpty').textContent = 'Untextured: this is the flat greybox colour.';
-      return;
-    }
-    $('#viewEmpty').textContent = 'Loading…';
-    const [img, normal, orm] = await Promise.all([
-      new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src.url('albedo'); }),
-      src.maps.includes('normal') ? texture(src.url('normal'), false) : null,
-      src.maps.includes('orm') ? texture(src.url('orm'), false) : null,
-    ]);
-    if (token !== loadToken) return;
-    albedoImg = img;
-    // Mean linear luminance of the albedo, matching what the build measures.
-    const c = document.createElement('canvas'); c.width = c.height = 64;
-    const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, 64, 64);
-    const px = cx.getImageData(0, 0, 64, 64).data; let sum = 0;
-    for (let i = 0; i < px.length; i += 4) sum += 0.2126 * srgb2lin(px[i] / 255) + 0.7152 * srgb2lin(px[i + 1] / 255) + 0.0722 * srgb2lin(px[i + 2] / 255);
-    meanLum = Math.max(sum / (px.length / 4), 0.01);
-    mat.color.setRGB(1, 1, 1);
-    mat.normalMap = normal; mat.roughnessMap = orm; mat.metalnessMap = orm; mat.aoMap = orm;
+    $('#mapPick').style.display = $('#viewReset').style.display = name === 'map' ? '' : 'none';
+    $('#viewHint').textContent = name === 'map' ? 'WASD fly · drag to look · Q/E down/up · Shift faster · scroll = speed · click a surface to select its slot' : 'Drag to orbit · scroll to zoom';
+    canvas.style.cursor = name === 'map' ? 'crosshair' : '';
     $('#viewEmpty').textContent = '';
-    update(s.effective || defaultsFor(s));
+    hint($('#viewHint').textContent, 6000);
+    if (name === 'map') await showMap(pickMap()); else { mapName = null; setSample(name); }
+  }
+  document.querySelectorAll('#shapes button').forEach(b => b.onclick = () => setMode(b.dataset.shape));
+
+  // Which map to show: the scoped map, else the last viewed one if it uses the selected slot, else one that does.
+  function pickMap() {
+    if (scope) return scope;
+    const names = Object.keys(mapIndex).filter(m => mapIndex[m].group === 'Prototype');
+    const has = m => current && mapIndex[m] && mapIndex[m].slots.includes(current.name);
+    const last = store.get('previewMap');
+    if (last && mapIndex[last] && (!current || has(last))) return last;
+    return names.find(has) || last || names[0];
+  }
+  function fillMapPick(selected) {
+    const sel = $('#mapPick');
+    const names = Object.keys(mapIndex);
+    sel.innerHTML = names.map(m => `<option value="${esc(m)}" ${m === selected ? 'selected' : ''}>${esc(m)}${current && !mapIndex[m].slots.includes(current.name) ? ' (no ' + current.name + ')' : ''}</option>`).join('');
+    sel.disabled = !!scope;
+    sel.title = scope ? 'Showing the map you are texturing' : 'Map to fly around';
+  }
+  $('#mapPick').onchange = e => { store.set('previewMap', e.target.value); showMap(e.target.value); };
+
+  async function showMap(name) {
+    if (!Object.keys(mapIndex).length) { try { mapIndex = await api('/api/maps'); } catch (e) { $('#viewEmpty').textContent = e.message; return; } }
+    if (!name || !mapIndex[name]) { $('#viewEmpty').textContent = 'No map selected.'; return; }
+    fillMapPick(name);
+    if (name === mapName && meshes.length) { refreshLooks(); return; }
+    mapName = name; const token = ++mapToken;
+    if (!scope) store.set('previewMap', name);
+    $('#viewEmpty').textContent = 'Loading ' + name + '…';
+    let shapes;
+    try { shapes = await api('/api/mapgeo?name=' + encodeURIComponent(name)); } catch (e) { $('#viewEmpty').textContent = e.message; return; }
+    if (token !== mapToken || mode !== 'map') return;
+    clear();
+    // Skip huge helper planes without a greybox material (sky/kill planes).
+    shapes = shapes.filter(s => s.slot || Math.max(...s.scale.map(Math.abs)) < 200);
+    shapes.forEach(s => { const m = mapMesh(s); meshes.push(m); group.add(m); });
+    group.updateMatrixWorld(true);
+    // Frame the bulk of the map (ignore far-off cinematic props).
+    const pts = shapes.map(s => S(s.loc));
+    const q = (arr, f) => arr.slice().sort((a, b) => a - b)[Math.floor(arr.length * f)];
+    const lo = new THREE.Vector3(q(pts.map(p => p.x), 0.1), q(pts.map(p => p.y), 0.1), q(pts.map(p => p.z), 0.1));
+    const hi = new THREE.Vector3(q(pts.map(p => p.x), 0.9), q(pts.map(p => p.y), 0.9), q(pts.map(p => p.z), 0.9));
+    const center = lo.clone().add(hi).multiplyScalar(0.5), radius = Math.max(10, hi.clone().sub(lo).length() * 0.6);
+    aimSun(center, radius);
+    fly.home = { center, radius };
+    resetView();
+    $('#viewEmpty').textContent = '';
+    refreshLooks();
   }
 
-  function update(e) {
-    if (!e || !albedoImg) return;
-    tile = e.tile_size / 100;
-    mat.roughness = e.roughness; mat.metalness = e.metallic;
-    if (mat.normalMap) mat.normalScale.set(e.normal_strength, -e.normal_strength); // DirectX normal maps
-    retint(e); applyTile(); mat.needsUpdate = true;
+  function resetView() {
+    if (!fly.home) return;
+    const { center, radius } = fly.home;
+    // Maps are walled arenas, so start above the middle looking down into them.
+    fly.pos.copy(center).add(new THREE.Vector3(radius * 0.25, radius * 0.95, radius * 0.45));
+    const dir = center.clone().sub(fly.pos).normalize();
+    fly.yaw = Math.atan2(-dir.x, -dir.z); fly.pitch = Math.asin(dir.y);
+    fly.speed = Math.max(8, radius / 4);
+  }
+  $('#viewReset').onclick = () => { resetView(); canvas.focus(); };
+
+  // Load every slot's look used by the current scene (selected slot: what is being tried, if anything).
+  function refreshLooks() {
+    const names = mode === 'map' ? [...new Set(meshes.map(m => m.userData.slot).filter(Boolean))] : (current ? [current.name] : []);
+    for (const n of names) {
+      const s = slots.find(x => x.name === n);
+      if (!s) continue;
+      const isSel = current && n === current.name;
+      const src = isSel && currentSrc ? currentSrc : ownSrc(s);
+      look(n).load(s, src, (isSel ? current.effective : s.effective) || defaultsFor(s));
+    }
+    applyMaterials();
   }
 
-  // Orbit controls
-  let drag = null;
-  canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+  // Show a slot's own textures, or a staged library material (src = {key, url(k), maps}) with the slot's settings.
+  function setSlot(s, src) {
+    const changed = !current || current.name !== s.name;
+    current = s; currentSrc = src || null;
+    if (mode === 'map') {
+      if (changed && !scope && mapName && !mapIndex[mapName]?.slots.includes(s.name)) { showMap(pickMap()); }
+      else { fillMapPick(mapName); refreshLooks(); if (changed) flash(s.name); }
+    } else refreshLooks();
+    if (mode !== 'map') $('#viewEmpty').textContent = (src || s.maps.length) ? '' : 'Untextured: this is the flat greybox colour.';
+  }
+  function update(e) { if (current) look(current.name).update(e); }
+
+  // Briefly glow the selected slot's surfaces so they are easy to find in a map.
+  let flashUntil = 0, flashSlot = null;
+  function flash(name) { flashSlot = name; flashUntil = performance.now() + 1400; }
+
+  // ---- input: orbit for samples, fly for maps; click a map surface to select its slot
+  let drag = null, moved = 0;
+  canvas.tabIndex = 0;
+  canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; moved = 0; canvas.setPointerCapture(e.pointerId); canvas.focus(); });
   canvas.addEventListener('pointermove', e => {
-    if (!drag) return;
-    orbit.theta -= (e.clientX - drag.x) * 0.008;
-    orbit.phi = Math.min(Math.PI - 0.15, Math.max(0.15, orbit.phi - (e.clientY - drag.y) * 0.008));
+    if (!drag) { if (mode === 'map') hover(e); return; }
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved += Math.abs(dx) + Math.abs(dy);
+    if (mode === 'map') {
+      fly.yaw -= dx * 0.004; fly.pitch = Math.max(-1.5, Math.min(1.5, fly.pitch - dy * 0.004));
+    } else {
+      orbit.theta -= dx * 0.008; orbit.phi = Math.min(Math.PI - 0.15, Math.max(0.15, orbit.phi - dy * 0.008));
+    }
     drag = { x: e.clientX, y: e.clientY };
   });
-  canvas.addEventListener('pointerup', () => drag = null);
-  canvas.addEventListener('wheel', e => { e.preventDefault(); orbit.dist = Math.min(40, Math.max(1.2, orbit.dist * (1 + Math.sign(e.deltaY) * 0.1))); }, { passive: false });
+  canvas.addEventListener('pointerup', e => { if (drag && moved < 5 && mode === 'map') pick(e); drag = null; });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (mode === 'map') { fly.speed = Math.min(200, Math.max(2, fly.speed * (e.deltaY < 0 ? 1.2 : 1 / 1.2))); hint(`Speed ${fly.speed.toFixed(0)} m/s`); }
+    else orbit.dist = Math.min(40, Math.max(1.2, orbit.dist * (1 + Math.sign(e.deltaY) * 0.1)));
+  }, { passive: false });
+  const FLY_KEYS = ['w', 'a', 's', 'd', 'q', 'e', 'shift', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+  canvas.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (mode !== 'map') return;
+    if (FLY_KEYS.includes(k)) { fly.keys.add(k); e.preventDefault(); e.stopPropagation(); }
+    if (k === 'r') { resetView(); e.stopPropagation(); }
+  });
+  canvas.addEventListener('keyup', e => fly.keys.delete(e.key.toLowerCase()));
+  canvas.addEventListener('blur', () => fly.keys.clear());
+
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  function hit(e) {
+    const r = canvas.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    return ray.intersectObjects(meshes, false)[0];
+  }
+  function hover(e) {
+    const h = hit(e), tip = $('#viewTip');
+    if (h && h.object.userData.slot) {
+      const r = canvas.getBoundingClientRect();
+      tip.style.display = 'block'; tip.style.left = (e.clientX - r.left + 14) + 'px'; tip.style.top = (e.clientY - r.top + 10) + 'px';
+      tip.textContent = h.object.userData.slot;
+    } else tip.style.display = 'none';
+  }
+  function pick(e) {
+    const h = hit(e); if (!h || !h.object.userData.slot) return;
+    const s = slots.find(x => x.name === h.object.userData.slot);
+    if (s) { selectSlot(s); document.querySelector('.slot.sel')?.scrollIntoView({ block: 'nearest' }); flash(s.name); }
+  }
+  let hintTimer;
+  const HINTS = { map: 'WASD fly · drag to look · Q/E down/up · Shift faster · scroll = speed · R resets · click a surface to select its slot' };
+  // Show a hint briefly, then fade it out (hovering the preview brings the controls hint back).
+  function hint(text, ms = 1500) {
+    const el = $('#viewHint'); el.textContent = text; el.classList.remove('faded'); clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { el.textContent = HINTS[mode] || 'Drag to orbit · scroll to zoom'; el.classList.add('faded'); }, ms);
+  }
+  canvas.addEventListener('pointerenter', () => hint(HINTS[mode] || 'Drag to orbit · scroll to zoom', 4000));
 
   function resize() {
     const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (canvas.width !== w * devicePixelRatio || canvas.height !== h * devicePixelRatio) {
+    if (canvas.width !== Math.floor(w * devicePixelRatio) || canvas.height !== Math.floor(h * devicePixelRatio)) {
       renderer.setPixelRatio(devicePixelRatio); renderer.setSize(w, h, false);
       camera.aspect = w / h; camera.updateProjectionMatrix();
     }
   }
-  function frame() {
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
     resize();
-    const t = orbit.target, r = orbit.dist;
-    camera.position.set(t.x + r * Math.sin(orbit.phi) * Math.sin(orbit.theta), t.y + r * Math.cos(orbit.phi), t.z + r * Math.sin(orbit.phi) * Math.cos(orbit.theta));
-    camera.lookAt(t);
+    if (mode === 'map') {
+      const k = fly.keys, sp = fly.speed * (k.has('shift') ? 3 : 1) * dt;
+      const fwd = new THREE.Vector3(-Math.sin(fly.yaw) * Math.cos(fly.pitch), Math.sin(fly.pitch), -Math.cos(fly.yaw) * Math.cos(fly.pitch));
+      const right = new THREE.Vector3(Math.cos(fly.yaw), 0, -Math.sin(fly.yaw));
+      if (k.has('w') || k.has('arrowup')) fly.pos.addScaledVector(fwd, sp);
+      if (k.has('s') || k.has('arrowdown')) fly.pos.addScaledVector(fwd, -sp);
+      if (k.has('d') || k.has('arrowright')) fly.pos.addScaledVector(right, sp);
+      if (k.has('a') || k.has('arrowleft')) fly.pos.addScaledVector(right, -sp);
+      if (k.has('e')) fly.pos.y += sp;
+      if (k.has('q')) fly.pos.y -= sp;
+      camera.position.copy(fly.pos);
+      camera.lookAt(fly.pos.clone().add(fwd));
+    } else {
+      const t = orbit.target, r = orbit.dist;
+      camera.position.set(t.x + r * Math.sin(orbit.phi) * Math.sin(orbit.theta), t.y + r * Math.cos(orbit.phi), t.z + r * Math.sin(orbit.phi) * Math.cos(orbit.theta));
+      camera.lookAt(t);
+    }
+    // Selected-slot glow after selecting/clicking in a map.
+    for (const [n, l] of Object.entries(looks)) {
+      const glow = n === flashSlot && now < flashUntil ? 0.35 * Math.abs(Math.sin((flashUntil - now) / 1400 * Math.PI * 3)) : 0;
+      l.mat.emissive.setRGB(glow, glow * 0.55, glow * 0.2);
+    }
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
   }
-  setShape(shape); frame();
-  return { setSlot, update };
+  requestAnimationFrame(frame);
+  setTimeout(() => setMode(mode), 0);
+  return { setSlot, update, refresh: () => { if (mode === 'map') showMap(pickMap()); else refreshLooks(); }, get mode() { return mode; } };
 })();
 
 // ------------------------------------------------------------------ library
@@ -946,6 +1142,7 @@ async function setScope(name) {
   $('#scopeBox').classList.remove('open');
   if (trying) endTry();
   await loadSlots(true);
+  preview.refresh();
 }
 $('#scopeBtn').onclick = async e => {
   e.stopPropagation();

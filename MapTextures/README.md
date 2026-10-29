@@ -25,6 +25,7 @@ Opens a local page in your browser (http://127.0.0.1:8765):
 - **Slots**: the 14 greybox materials, with how many maps use each.
 - **ambientCG library**: search thousands of free CC0 materials. Click one to try it on the selected slot in the 3D preview, then **Apply** to keep it. It downloads at the resolution you pick (1K/2K/4K) and converts to the maps the build needs.
 - **Preview and settings**: tile size, tint, colour, bumpiness, roughness, metallic and edge blend, previewed live with the same maths as the in-game shader.
+- **Map fly-through**: the preview's **Map** button rebuilds a real map from its files (the prototype maps are made of the engine's basic cubes and planes) with every surface in its slot's current texture. WASD to fly, drag to look, Q/E down/up, Shift faster, scroll for speed, R to reset. Hover a surface to see its slot, click it to select that slot.
 - **Per-map textures**: the **Texturing: All maps** picker at the top left switches to a single map. Anything you apply there changes only that map; every other slot keeps the all-maps texture.
 - **Build & install** cooks and installs in one click (about two minutes). The dot on the button means you have changes that aren't in the game yet. Undo any apply or remove from its notification or with Ctrl+Z.
 

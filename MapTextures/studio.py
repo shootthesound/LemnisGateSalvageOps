@@ -115,6 +115,28 @@ def map_index():
     return cached['maps']
 
 
+_SHAPES = {}
+
+
+def map_shapes(name):
+    """Box/plane geometry of a map for the fly-through preview (cached in memory and on disk)."""
+    if not name:
+        raise ValueError('No map given')
+    if name not in _SHAPES:
+        path = os.path.join(build.BUILD, 'mapgeo', name + '.json')
+        if os.path.exists(path):
+            _SHAPES[name] = json.load(open(path))
+        else:
+            import mapgeo
+            import pakfile
+            assets = {s['asset']: n for n, s in CFG['slots'].items()}
+            shapes = mapgeo.map_geometry(pakfile.game_paks(build.find_game()), map_index()[name]['path'], assets)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            json.dump(shapes, open(path, 'w'))
+            _SHAPES[name] = shapes
+    return _SHAPES[name]
+
+
 def scope_arg(scope):
     if not scope:
         return None
@@ -501,6 +523,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, all_state(scope))
             if url.path == '/api/maps':
                 return self.send(200, map_index())
+            if url.path == '/api/mapgeo':
+                return self.send(200, map_shapes(scope_arg(query.get('name', [''])[0])))
             if url.path == '/api/job':
                 return self.send(200, JOB)
             if url.path == '/api/search':
