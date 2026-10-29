@@ -105,7 +105,7 @@ section:last-child { border-right: 0; }
 #view:active { cursor: grabbing; }
 .viewbar { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; }
 .viewbar button { padding: 4px 9px; font-size: 12px; background: rgba(21,27,36,.85); }
-.viewbar button.on { border-color: var(--accent); color: var(--accent2); }
+.viewbar button.on, #tryCompare.on { border-color: var(--accent); color: var(--accent2); }
 #viewHint { position: absolute; right: 10px; top: 12px; font-size: 11px; color: var(--dim); pointer-events: none; }
 #tryBar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   background: rgba(21,27,36,.94); border: 1px solid var(--accent); border-radius: 8px; }
@@ -191,7 +191,7 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
 <div id="setup"></div>
 <div id="guide" style="display:none">
   <div class="steps">
-    <div><span class="num">1</span><b>Pick a slot</b> on the left. Each one is a greybox colour shared by many maps. Use <b>Debug textures</b> (More ▾) once to see which surface is which.</div>
+    <div><span class="num">1</span><b>Pick a slot</b> on the left: each is a greybox colour shared by many maps (<b>Debug textures</b> under More ▾ shows which is which). Switch <b>Texturing</b> to one map to give it its own look.</div>
     <div><span class="num">2</span><b>Click a material</b> to try it in the preview, then <b>Apply</b>. Drop your own texture files anywhere to try those instead.</div>
     <div><span class="num">3</span><b>Build &amp; install</b>, then start the game <b>without EasyAntiCheat</b> (the Salvage Ops shortcut, or LemnisGate-Win64-Shipping.exe).</div>
   </div>
@@ -355,8 +355,11 @@ document.addEventListener('click', e => {
   const el = e.target.closest('.slot'); if (el) selectSlot(slots.find(s => s.name === el.dataset.slot));
 });
 document.addEventListener('keydown', e => {
-  if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
+  if (e.target.matches?.('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('.slot')) {
+    e.preventDefault(); selectSlot(slots.find(s => s.name === e.target.closest('.slot').dataset.slot));
+  }
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     const i = slots.indexOf(sel) + (e.key === 'ArrowDown' ? 1 : -1);
     if (slots[i]) { e.preventDefault(); selectSlot(slots[i]); document.querySelector('.slot.sel')?.scrollIntoView({ block: 'nearest' }); }
@@ -745,7 +748,7 @@ async function runUndo(entry) {
 }
 const undoAction = (slot, id) => { const entry = { slot, id, scope }; undoStack.push(entry); return { label: 'Undo', run: () => runUndo(entry) }; };
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches('input, select')) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches?.('input, select')) {
     e.preventDefault();
     if (undoStack.length) runUndo(undoStack[undoStack.length - 1]); else toast('Nothing to undo.');
   }
@@ -808,9 +811,23 @@ function enterTry(slot, a, stage, sub, res = null) {
   $('#tryBar').style.display = 'flex';
   $('#tryBar').innerHTML = `${a.preview ? `<img src="${esc(a.preview)}" alt="">` : `<img src="/stage/${stage.id}/albedo" alt="">`}<div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}</b>${scope ? ` (${esc(scope)} only)` : ''}
     <div class="dim" style="font-size:12px">${sub} · not applied yet</div></div>
+    <button class="ghost" id="tryCompare" title="Hold to see what ${slot.name} looks like now (or hold C)">Hold to compare</button>
     <button class="ghost" id="tryCancel">Cancel</button><button class="primary" id="tryApply">Apply to ${slot.name}</button>`;
   $('#tryCancel').onclick = endTry;
   $('#tryApply').onclick = () => applyMaterial(a, res, slot);
+  const stageSrc = { key: 'stage:' + stage.id, url: k => `/stage/${stage.id}/${k}`, maps: stage.maps };
+  trying.compare = on => {
+    if (!trying || trying.comparing === on) return;
+    trying.comparing = on;
+    $('#tryCompare').classList.toggle('on', on);
+    $('#tryCompare').textContent = on ? 'Showing current' : 'Hold to compare';
+    if (on) { const live = slot.effective; slot.effective = slot.savedEffective !== undefined && slot.tempEffective ? slot.savedEffective : live;
+              preview.setSlot(slot); slot.effective = live; }
+    else preview.setSlot(slot, stageSrc);
+  };
+  const cmp = $('#tryCompare');
+  cmp.onpointerdown = () => trying && trying.compare(true);
+  cmp.onpointerup = cmp.onpointerleave = () => trying && trying.compare(false);
   $('#srcRow').innerHTML = `<div class="grow">Previewing <b>${esc(a.name)}</b>. Adjust the settings below, then <b>Apply</b> to keep it
     ${slot.maps.length && !slot.inherited ? `(replaces <b>${esc(slot.source ? slot.source.asset : 'the current texture')}</b>)` : ''} or <b>Cancel</b>.</div>`;
 }
@@ -847,7 +864,12 @@ $('#grid').onclick = e => {
   if (e.target.closest('.apply') && card.classList.contains('trying')) return applyMaterial(a, pickRes(a), sel);
   tryMaterial(card, a);
 };
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && trying && !e.target.matches('input')) endTry(); });
+document.addEventListener('keydown', e => {
+  if (e.target.matches?.('input, select')) return;
+  if (e.key === 'Escape' && trying) endTry();
+  if ((e.key === 'c' || e.key === 'C') && trying && trying.compare && !e.ctrlKey && !e.metaKey) trying.compare(true);
+});
+document.addEventListener('keyup', e => { if ((e.key === 'c' || e.key === 'C') && trying && trying.compare) trying.compare(false); });
 
 // ------------------------------------------------------------------ jobs
 $('#buildBtn').onclick = () => startJob('build');
