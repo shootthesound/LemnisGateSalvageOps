@@ -85,10 +85,22 @@ def master(defaults):
         side_uv[axis] = expr(m, unreal.MaterialExpressionDivide, -1000, yy + 160)
         link(plane, '', side_uv[axis], 'A')
         link(slope_tile, '', side_uv[axis], 'B')
-    # Slope blend: 0 on flat ground, 1 on steep slopes.
-    normal_ws = expr(m, unreal.MaterialExpressionVertexNormalWS, -1400, 500)
-    nz = expr(m, unreal.MaterialExpressionComponentMask, -1200, 500, r=False, g=False, b=True, a=False)
-    link(normal_ws, '', nz, '')
+    # Slope blend: 0 on flat ground, 1 on steep slopes. The surface's real facing per pixel (from how the world
+    # position changes across the screen) rather than the vertex normal: a narrow spike's vertex normals are averaged
+    # with the flat ground around it, which would put grass up its sides and pick the wrong side projection.
+    dx = expr(m, unreal.MaterialExpressionDDX, -1600, 500)
+    dy = expr(m, unreal.MaterialExpressionDDY, -1600, 580)
+    link(world, '', dx, 'Value')
+    link(world, '', dy, 'Value')
+    cross = expr(m, unreal.MaterialExpressionCrossProduct, -1500, 540)
+    link(dy, '', cross, 'A')
+    link(dx, '', cross, 'B')
+    normal_ws = expr(m, unreal.MaterialExpressionNormalize, -1400, 540)
+    link(cross, '', normal_ws, 'VectorInput')
+    nz_signed = expr(m, unreal.MaterialExpressionComponentMask, -1300, 500, r=False, g=False, b=True, a=False)
+    link(normal_ws, '', nz_signed, '')
+    nz = expr(m, unreal.MaterialExpressionAbs, -1200, 500)
+    link(nz_signed, '', nz, '')
     steep = expr(m, unreal.MaterialExpressionOneMinus, -1050, 500)
     link(nz, '', steep, '')
     start = expr(m, unreal.MaterialExpressionScalarParameter, -1050, 600, parameter_name='SlopeStart', default_value=0.25)
