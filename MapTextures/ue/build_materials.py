@@ -15,31 +15,41 @@ TOOLS = unreal.AssetToolsHelpers.get_asset_tools()
 # UE is left-handed (X forward, Y right, Z up). Planes: X faces map (-y, -z),
 # Y faces map (x, -z), Z faces map (y, -x); u is mirrored by the facing sign so
 # text reads correctly from outside on every side.
+# Surface-aware: the Z plane of upward-facing surfaces samples the floor set (TexF, TileF);
+# everything else, including undersides, samples the wall set (TexW, TileW).
 TRIPLANAR = '''
 float3 n = normalize(N);
 float3 w = pow(abs(n), Sharp); w /= max(w.x + w.y + w.z, 1e-5);
-float3 p = WP / max(Tile, 1.0);
 float3 s = float3(n.x < 0 ? -1.0 : 1.0, n.y < 0 ? -1.0 : 1.0, n.z < 0 ? -1.0 : 1.0);
-float2 uvX = float2(-p.y * s.x, -p.z);
-float2 uvY = float2(p.x * s.y, -p.z);
-float2 uvZ = float2(p.y * s.z, -p.x);
-float4 cX = Tex.Sample(TexSampler, uvX);
-float4 cY = Tex.Sample(TexSampler, uvY);
-float4 cZ = Tex.Sample(TexSampler, uvZ);
+float up = n.z > 0 ? 1.0 : 0.0;
+float3 pw = WP / max(TileW, 1.0);
+float3 pf = WP / max(TileF, 1.0);
+float4 cX = TexW.Sample(TexWSampler, float2(-pw.y * s.x, -pw.z));
+float4 cY = TexW.Sample(TexWSampler, float2(pw.x * s.y, -pw.z));
+float4 cZw = TexW.Sample(TexWSampler, float2(pw.y * s.z, -pw.x));
+float4 cZf = TexF.Sample(TexFSampler, float2(pf.y * s.z, -pf.x));
+float wf = w.z * up;
+float ww = 1 - wf;
 '''
 
+# Tint is linear in the colour, so the wall and floor parts are tinted separately and summed.
 ALBEDO = TRIPLANAR + '''
-float3 c = cX.rgb * w.x + cY.rgb * w.y + cZ.rgb * w.z;
-float l = dot(c, float3(0.2126, 0.7152, 0.0722));
-return lerp(c, Color * l / max(TintMean, 0.01), TintStrength);
+float3 lum = float3(0.2126, 0.7152, 0.0722);
+float3 cw = cX.rgb * w.x + cY.rgb * w.y + cZw.rgb * w.z * (1 - up);
+float3 cf = cZf.rgb * wf;
+cw = lerp(cw, Color * dot(cw, lum) / max(MeanW, 0.01), TintW);
+cf = lerp(cf, Color * dot(cf, lum) / max(MeanF, 0.01), TintF);
+return cw + cf;
 '''
 
 # Tangent-space (DirectX) normals per plane, rebuilt in world space from the
 # plane's u/v directions; z reconstructed because BC5 drops it.
 NORMAL = TRIPLANAR + '''
-float3 tX = float3((cX.xy * 2 - 1) * Strength, 0); tX.z = sqrt(saturate(1 - dot(tX.xy, tX.xy)));
-float3 tY = float3((cY.xy * 2 - 1) * Strength, 0); tY.z = sqrt(saturate(1 - dot(tY.xy, tY.xy)));
-float3 tZ = float3((cZ.xy * 2 - 1) * Strength, 0); tZ.z = sqrt(saturate(1 - dot(tZ.xy, tZ.xy)));
+float4 cZ = lerp(cZw, cZf, up);
+float strZ = lerp(StrW, StrF, up);
+float3 tX = float3((cX.xy * 2 - 1) * StrW, 0); tX.z = sqrt(saturate(1 - dot(tX.xy, tX.xy)));
+float3 tY = float3((cY.xy * 2 - 1) * StrW, 0); tY.z = sqrt(saturate(1 - dot(tY.xy, tY.xy)));
+float3 tZ = float3((cZ.xy * 2 - 1) * strZ, 0); tZ.z = sqrt(saturate(1 - dot(tZ.xy, tZ.xy)));
 float3 nX = tX.x * float3(0, -s.x, 0) + tX.y * float3(0, 0, -1) + tX.z * n;
 float3 nY = tY.x * float3(s.y, 0, 0) + tY.y * float3(0, 0, -1) + tY.z * n;
 float3 nZ = tZ.x * float3(0, s.z, 0) + tZ.y * float3(-1, 0, 0) + tZ.z * n;
@@ -47,8 +57,8 @@ return normalize(nX * w.x + nY * w.y + nZ * w.z);
 '''
 
 ORM = TRIPLANAR + '''
-float3 c = cX.rgb * w.x + cY.rgb * w.y + cZ.rgb * w.z;
-return float3(c.r, c.g * Rough, c.b * Metal);
+float3 c = cX.rgb * w.x + cY.rgb * w.y + lerp(cZw.rgb, cZf.rgb, up) * w.z;
+return float3(c.r, c.g * (RoughW * ww + RoughF * wf), c.b * (MetalW * ww + MetalF * wf));
 '''
 
 USAGE_FLAGS = ('used_with_instanced_static_meshes', 'used_with_spline_meshes', 'used_with_skeletal_mesh',
@@ -119,25 +129,35 @@ def build_triplanar(path, p):
         return node(mat, unreal.MaterialExpressionTextureObjectParameter, -900, y, parameter_name=pname,
                     texture=unreal.load_asset(p[key]), sampler_type=sampler)
 
-    albedo = tex_param('Albedo', 'albedo', unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -600)
-    normal = tex_param('Normal', 'normal', unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL, -300)
-    orm = tex_param('ORM', 'orm', unreal.MaterialSamplerType.SAMPLERTYPE_MASKS, 0)
+    f = p['floor']
+    sampler = {'albedo': unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, 'normal': unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL,
+               'orm': unreal.MaterialSamplerType.SAMPLERTYPE_MASKS}
+    names = {'albedo': 'Albedo', 'normal': 'Normal', 'orm': 'ORM'}
+    tex = {k: tex_param(names[k], k, sampler[k], -900 + i * 150) for i, k in enumerate(('albedo', 'normal', 'orm'))}
+    ftex = {k: node(mat, unreal.MaterialExpressionTextureObjectParameter, -1200, -900 + i * 150, parameter_name='Floor' + names[k],
+                    texture=unreal.load_asset(f[k]), sampler_type=sampler[k]) for i, k in enumerate(('albedo', 'normal', 'orm'))}
     color = node(mat, unreal.MaterialExpressionVectorParameter, -900, 300, parameter_name='Color',
                  default_value=unreal.LinearColor(*p['color'], 1.0))
-    tile = scalar(mat, 'TileSize', p['tile_size'], 450)
-    sharp = scalar(mat, 'BlendSharpness', p['blend_sharpness'], 550)
-    tint = scalar(mat, 'TintStrength', p['tint_strength'], 650)
-    tint_mean = scalar(mat, 'TintMean', p['tint_mean'], 700)
-    strength = scalar(mat, 'NormalStrength', p['normal_strength'], 750)
-    rough = scalar(mat, 'Roughness', p['roughness'], 850)
-    metal = scalar(mat, 'Metallic', p['metallic'], 950)
-    wp = node(mat, unreal.MaterialExpressionWorldPosition, -900, 1100)
-    vn = node(mat, unreal.MaterialExpressionVertexNormalWS, -900, 1200)
+    sharp = scalar(mat, 'BlendSharpness', p['blend_sharpness'], 400)
+    y = 500
+    # Wall parameters keep their original names (child materials of M_Painted_Metal set Color/Roughness by name).
+    surface = {}
+    for key, pname in (('tile_size', 'TileSize'), ('tint_strength', 'TintStrength'), ('tint_mean', 'TintMean'),
+                       ('normal_strength', 'NormalStrength'), ('roughness', 'Roughness'), ('metallic', 'Metallic')):
+        surface[key] = (scalar(mat, pname, p[key], y), scalar(mat, 'Floor' + pname, f[key], y + 50))
+        y += 120
+    wp = node(mat, unreal.MaterialExpressionWorldPosition, -900, y + 100)
+    vn = node(mat, unreal.MaterialExpressionVertexNormalWS, -900, y + 200)
 
-    common = {'WP': wp, 'N': vn, 'Tile': tile, 'Sharp': sharp}
-    c_albedo = custom(mat, ALBEDO, dict(common, Tex=albedo, Color=color, TintStrength=tint, TintMean=tint_mean), -500, 'TriplanarAlbedo')
-    c_normal = custom(mat, NORMAL, dict(common, Tex=normal, Strength=strength), -100, 'TriplanarNormal')
-    c_orm = custom(mat, ORM, dict(common, Tex=orm, Rough=rough, Metal=metal), 300, 'TriplanarORM')
+    common = {'WP': wp, 'N': vn, 'TileW': surface['tile_size'][0], 'TileF': surface['tile_size'][1], 'Sharp': sharp}
+    c_albedo = custom(mat, ALBEDO, dict(common, TexW=tex['albedo'], TexF=ftex['albedo'], Color=color,
+                                        TintW=surface['tint_strength'][0], TintF=surface['tint_strength'][1],
+                                        MeanW=surface['tint_mean'][0], MeanF=surface['tint_mean'][1]), -500, 'TriplanarAlbedo')
+    c_normal = custom(mat, NORMAL, dict(common, TexW=tex['normal'], TexF=ftex['normal'],
+                                        StrW=surface['normal_strength'][0], StrF=surface['normal_strength'][1]), -100, 'TriplanarNormal')
+    c_orm = custom(mat, ORM, dict(common, TexW=tex['orm'], TexF=ftex['orm'], RoughW=surface['roughness'][0],
+                                  RoughF=surface['roughness'][1], MetalW=surface['metallic'][0], MetalF=surface['metallic'][1]),
+                   300, 'TriplanarORM')
 
     MEL.connect_material_property(c_albedo, '', unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(c_normal, '', unreal.MaterialProperty.MP_NORMAL)
@@ -195,13 +215,15 @@ def main():
     for m in JOB['materials']:
         build_triplanar(m['asset'], m['params'])
     for i in JOB['instances']:
-        p = i['params']
-        build_instance(i['asset'], JOB['parent_material'],
-                       {'TileSize': p['tile_size'], 'BlendSharpness': p['blend_sharpness'],
-                        'TintStrength': p['tint_strength'], 'TintMean': p['tint_mean'], 'NormalStrength': p['normal_strength'],
-                        'Roughness': p['roughness'], 'Metallic': p['metallic']},
-                       {'Color': p['color']},
-                       {'Albedo': p['albedo'], 'Normal': p['normal'], 'ORM': p['orm']})
+        p, f = i['params'], i['params']['floor']
+        scalars = {'BlendSharpness': p['blend_sharpness']}
+        for key, pname in (('tile_size', 'TileSize'), ('tint_strength', 'TintStrength'), ('tint_mean', 'TintMean'),
+                           ('normal_strength', 'NormalStrength'), ('roughness', 'Roughness'), ('metallic', 'Metallic')):
+            scalars[pname] = p[key]
+            scalars['Floor' + pname] = f[key]
+        textures = {'Albedo': p['albedo'], 'Normal': p['normal'], 'ORM': p['orm'],
+                    'FloorAlbedo': f['albedo'], 'FloorNormal': f['normal'], 'FloorORM': f['orm']}
+        build_instance(i['asset'], JOB['parent_material'], scalars, {'Color': p['color']}, textures)
     for t in JOB['passthroughs']:
         build_instance(t['asset'], t['parent'], t['scalars'], t['vectors'], {})
 

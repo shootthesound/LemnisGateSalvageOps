@@ -46,9 +46,11 @@ def fetch(url):
         return r.read()
 
 
-def slot_dir(slot, scope=None):
-    """Folder holding a slot's textures: the all-maps default, or one map's override when `scope` is a map."""
-    return build.map_folder(scope, slot) if scope else os.path.join(build.TEXTURES, slot)
+def slot_dir(slot, scope=None, surface=None):
+    """Folder holding a slot's textures: the all-maps default, or one map's override when `scope` is a map.
+    surface='floor' is the floor set in its floor/ subfolder."""
+    d = build.map_folder(scope, slot) if scope else os.path.join(build.TEXTURES, slot)
+    return os.path.join(d, build.FLOOR_DIR) if surface == 'floor' else d
 
 
 def read_json(path, default):
@@ -70,13 +72,24 @@ def slot_state(name, scope=None):
         return state
     files = list(maps.values()) + [os.path.join(d, 'settings.json')]
     stamp = max((os.path.getmtime(f) for f in files if os.path.exists(f)), default=0)
+    effective = build.slot_settings(CFG, name, d)[0] if maps else None
+    fd = os.path.join(d, build.FLOOR_DIR)
+    fmaps = build.find_maps(name, fd) if maps else {}
+    floor = {'maps': sorted(fmaps), 'source': read_json(os.path.join(fd, 'source.json'), None), 'stamp': 0,
+             'effective': None}
+    if fmaps:
+        files = list(fmaps.values()) + [os.path.join(fd, 'settings.json')]
+        floor['stamp'] = int(max(os.path.getmtime(f) for f in files if os.path.exists(f)) * 1000)
+        floor['effective'] = dict(build.floor_settings(CFG, name, d, effective)[0], color=effective['color'],
+                                  blend_sharpness=effective['blend_sharpness'])
     return {
+        'floor': floor,
         'name': name, 'asset': slot['asset'], 'proto_maps': slot['proto_maps'],
         'shared': slot['shared'] and not scope, 'note': slot['note'], 'maps': sorted(maps),
         'stamp': int(stamp * 1000), 'color': slot['color'], 'scope': scope, 'inherited': False,
         'source': read_json(os.path.join(d, 'source.json'), None),
         'settings': read_json(os.path.join(d, 'settings.json'), {}),
-        'effective': build.slot_settings(CFG, name, d)[0] if maps else None,
+        'effective': effective,
     }
 
 
@@ -349,41 +362,41 @@ def stage_upload(files):
 SLOT_FILES = ('source.json', 'settings.json')
 
 
-def slot_files(slot, scope=None):
-    d = slot_dir(slot, scope)
+def slot_files(slot, scope=None, surface=None):
+    d = slot_dir(slot, scope, surface)
     if not os.path.isdir(d):
         return []
     return [f for f in os.listdir(d) if os.path.splitext(f)[0].lower() in build.MAPS or f in SLOT_FILES]
 
 
-def backup(slot, scope=None):
+def backup(slot, scope=None, surface=None):
     """Copy the slot's current files aside so the change can be undone; returns the undo id."""
     undo_id = '%s_%d' % (slot, int(time.time() * 1000))
     dest = os.path.join(HISTORY, undo_id)
     os.makedirs(dest)
-    for f in slot_files(slot, scope):
-        shutil.copy2(os.path.join(slot_dir(slot, scope), f), dest)
+    for f in slot_files(slot, scope, surface):
+        shutil.copy2(os.path.join(slot_dir(slot, scope, surface), f), dest)
     return undo_id
 
 
-def undo(slot, undo_id, scope=None):
+def undo(slot, undo_id, scope=None, surface=None):
     src = os.path.join(HISTORY, undo_id)
     if not re.fullmatch(r'\w+_\d+', undo_id) or not undo_id.startswith(slot + '_') or not os.path.isdir(src):
         raise ValueError('Nothing to undo')
-    d = slot_dir(slot, scope)
-    for f in slot_files(slot, scope):
+    d = slot_dir(slot, scope, surface)
+    for f in slot_files(slot, scope, surface):
         os.remove(os.path.join(d, f))
     os.makedirs(d, exist_ok=True)
     for f in os.listdir(src):
         shutil.copy2(os.path.join(src, f), d)
 
 
-def assign(slot, asset_id, res, scope=None, stage_id=None, label=None):
+def assign(slot, asset_id, res, scope=None, stage_id=None, label=None, surface=None):
     src = os.path.join(STAGING, stage_id) if stage_id else staged(asset_id, res)
-    undo_id = backup(slot, scope)
-    d = slot_dir(slot, scope)
+    undo_id = backup(slot, scope, surface)
+    d = slot_dir(slot, scope, surface)
     os.makedirs(d, exist_ok=True)
-    for f in slot_files(slot, scope):
+    for f in slot_files(slot, scope, surface):
         if f != 'settings.json':
             os.remove(os.path.join(d, f))
     for f in os.listdir(src):
@@ -394,19 +407,19 @@ def assign(slot, asset_id, res, scope=None, stage_id=None, label=None):
     json.dump(source, open(os.path.join(d, 'source.json'), 'w'))
     settings_path = os.path.join(d, 'settings.json')
     if not os.path.exists(settings_path):
-        json.dump({'tint_strength': 1.0 if slot in TINTED_BY_DEFAULT else 0.0, 'tile_size': 200},
-                  open(settings_path, 'w'))
+        tinted = slot in TINTED_BY_DEFAULT and surface != 'floor'
+        json.dump({'tint_strength': 1.0 if tinted else 0.0, 'tile_size': 200}, open(settings_path, 'w'))
     return undo_id
 
 
-def clear(slot, scope=None):
-    undo_id = backup(slot, scope)
-    for f in slot_files(slot, scope):
-        os.remove(os.path.join(slot_dir(slot, scope), f))
+def clear(slot, scope=None, surface=None):
+    undo_id = backup(slot, scope, surface)
+    for f in slot_files(slot, scope, surface):
+        os.remove(os.path.join(slot_dir(slot, scope, surface), f))
     return undo_id
 
 
-def save_settings(slot, values, scope=None):
+def save_settings(slot, values, scope=None, surface=None):
     clean = {}
     for k, v in values.items():
         if k not in build.SETTINGS_KEYS:
@@ -415,8 +428,8 @@ def save_settings(slot, values, scope=None):
             clean[k] = [float(c) for c in v][:3]
         else:
             clean[k] = float(v)
-    os.makedirs(slot_dir(slot, scope), exist_ok=True)
-    json.dump(clean, open(os.path.join(slot_dir(slot, scope), 'settings.json'), 'w'))
+    os.makedirs(slot_dir(slot, scope, surface), exist_ok=True)
+    json.dump(clean, open(os.path.join(slot_dir(slot, scope, surface), 'settings.json'), 'w'))
 
 
 _PREVIEWS = {}
@@ -533,7 +546,9 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 if m.group(1) == 'tex':
                     slot = self.slot_arg(m.group(2))
-                    path = (build.find_maps(slot, slot_dir(slot, scope)) or build.find_maps(slot)).get(m.group(3))
+                    surface = 'floor' if query.get('surface', [''])[0] == 'floor' else None
+                    path = (build.find_maps(slot, slot_dir(slot, scope, surface)) or
+                            build.find_maps(slot, slot_dir(slot, None, surface))).get(m.group(3))
                 else:
                     path = os.path.join(STAGING, m.group(2), m.group(3) + '.png')
                 if not path or not os.path.exists(path):
@@ -548,6 +563,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             result = {'ok': True}
             scope = scope_arg(body.get('map'))
+            surface = 'floor' if body.get('surface') == 'floor' else None
             if self.path in ('/api/stage', '/api/assign'):
                 asset = body['asset']
                 if not re.fullmatch(r'[A-Za-z0-9_]+', asset) or body.get('resolution') not in RESOLUTIONS:
@@ -556,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                     d = staged(asset, body['resolution'])
                     result.update(id=os.path.basename(d), maps=sorted(os.path.splitext(f)[0] for f in os.listdir(d)))
                 else:
-                    result['undo'] = assign(self.slot_arg(body['slot']), asset, body['resolution'], scope)
+                    result['undo'] = assign(self.slot_arg(body['slot']), asset, body['resolution'], scope, surface=surface)
             elif self.path == '/api/upload':
                 import base64
                 files = {f['name']: base64.b64decode(f['data']) for f in body['files']}
@@ -566,13 +582,13 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/assign_upload':
                 if not re.fullmatch(r'upload_\d+', body['id']) or not os.path.isdir(os.path.join(STAGING, body['id'])):
                     raise ValueError('That upload has expired - drop the files again')
-                result['undo'] = assign(self.slot_arg(body['slot']), None, None, scope, body['id'], body.get('label'))
+                result['undo'] = assign(self.slot_arg(body['slot']), None, None, scope, body['id'], body.get('label'), surface)
             elif self.path == '/api/settings':
-                save_settings(self.slot_arg(body['slot']), body['settings'], scope)
+                save_settings(self.slot_arg(body['slot']), body['settings'], scope, surface)
             elif self.path == '/api/clear':
-                result['undo'] = clear(self.slot_arg(body['slot']), scope)
+                result['undo'] = clear(self.slot_arg(body['slot']), scope, surface)
             elif self.path == '/api/undo':
-                undo(self.slot_arg(body['slot']), body['undo'], scope)
+                undo(self.slot_arg(body['slot']), body['undo'], scope, surface)
             elif self.path == '/api/job':
                 start_build(body['kind'], bool(body.get('allow_shared')))
             else:
@@ -582,10 +598,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send(400, {'error': str(e)})
 
 
+class Server(ThreadingHTTPServer):
+    # The default SO_REUSEADDR lets several servers share the port on Windows; refuse so a second launch
+    # notices the first one instead of silently serving stale code alongside it.
+    allow_reuse_address = False
+
+
 def main():
     url = 'http://127.0.0.1:%d/' % PORT
     try:
-        server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+        server = Server(('127.0.0.1', PORT), Handler)
     except OSError:
         print('Texture Studio is already running - opening %s' % url)
         webbrowser.open(url)

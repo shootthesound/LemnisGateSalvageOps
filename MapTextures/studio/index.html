@@ -122,6 +122,10 @@ section:last-child { border-right: 0; }
 #viewEmpty { position: absolute; inset: auto 0 12px 0; text-align: center; font-size: 13px; color: var(--dim); pointer-events: none; }
 .slotTitle { display: flex; align-items: baseline; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
 .slotTitle h3 { margin: 0; font-size: 20px; }
+.seg { margin-left: auto; display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 14px; background: var(--panel); }
+.seg button.on { background: var(--accent); color: #1a0d00; font-weight: 600; }
+.seg button .dotf { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #7cc7e8; margin-left: 5px; vertical-align: middle; }
 .note { color: var(--dim); font-size: 13px; margin: 0 0 10px; }
 .warnbox { border: 1px solid #6b4f16; background: #2a200b; color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
 .srcrow { display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
@@ -232,7 +236,9 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
         <div id="viewHint">Drag to orbit · scroll to zoom</div>
         <div id="viewTip"></div>
       </div>
-      <div class="slotTitle"><h3 id="slotName"></h3><span id="slotBadges"></span></div>
+      <div class="slotTitle"><h3 id="slotName"></h3><span id="slotBadges"></span>
+        <div class="seg" id="surfTabs" title="Floors are upward-facing surfaces; walls are everything else">
+          <button data-surf="wall">Walls</button><button data-surf="floor">Floors</button></div></div>
       <p class="note" id="slotNote"></p>
       <div id="sharedWarn" class="warnbox" style="display:none"></div>
       <div id="srcRow" class="srcrow"></div>
@@ -301,12 +307,26 @@ let slots = [], sel = null, status = {}, dirty = false, builtShared = false, ove
 // scope = null edits the all-maps textures; a map name edits that map's own overrides.
 let scope = null;
 const scopeQ = () => scope ? 'map=' + encodeURIComponent(scope) : '';
-const texUrl = (s, k) => `/tex/${s.name}/${k}?v=${s.stamp}` + (scope ? '&' + scopeQ() : '');
-const withScope = body => scope ? Object.assign({ map: scope }, body) : body;
+const texUrl = (s, k) => `/tex/${s.name}/${k}?v=${s.stamp}` + (scope ? '&' + scopeQ() : '') + (s.surface === 'floor' ? '&surface=floor' : '');
+// Every edit call targets the current scope (all maps or one map) and surface (walls or floors).
+const withScope = body => Object.assign(scope ? { map: scope } : {}, surface === 'floor' ? { surface: 'floor' } : {}, body);
+// surface = 'wall' edits a slot's main texture set; 'floor' edits the set used on upward-facing surfaces.
+let surface = 'wall';  // restored from storage once `store` exists (below)
+// The thing the editor works on: the selected slot, or a view of its floor set with the same shape.
+function E() {
+  if (surface !== 'floor' || !sel) return sel;
+  if (!sel._floor) {
+    const f = sel.floor || { maps: [], stamp: 0 };
+    sel._floor = { surface: 'floor', name: sel.name, color: sel.color, asset: sel.asset, maps: f.maps, source: f.source,
+      stamp: f.stamp, effective: f.effective, usesWall: !f.maps.length, wallReady: sel.maps.length > 0 && !sel.inherited };
+  }
+  return sel._floor;
+}
 // Toggling "Include shared slots" changes what a build contains when a shared slot has textures.
 const sharedMismatch = list => list.some(s => s.shared && s.maps.length) && builtShared !== $('#allowShared').checked;
 const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+surface = store.get('surface') === 'floor' ? 'floor' : 'wall';
 
 // ------------------------------------------------------------------ slots
 async function loadSlots(keepSel = true) {
@@ -330,7 +350,8 @@ function slotThumb(s) {
 }
 const overrideCount = name => Object.values(overrides).filter(list => list.includes(name)).length;
 function slotSub(s) {
-  const what = s.source ? esc(s.source.asset) : (s.maps.length ? 'Custom texture' : 'Untextured');
+  const what = (s.source ? esc(s.source.asset) : (s.maps.length ? 'Custom texture' : 'Untextured')) +
+    (s.floor && s.floor.maps.length ? ` <span style="color:#7cc7e8" title="Floors: ${esc(s.floor.source ? s.floor.source.asset : 'custom')}">+ floor</span>` : '');
   if (scope) return s.inherited ? `All maps: ${what}` : `<b style="color:#7cc7e8">This map:</b> ${what}`;
   const n = overrideCount(s.name);
   return `${what} · ${s.proto_maps} maps` + (n ? ` · <span style="color:#7cc7e8">+${n}</span>` : '');
@@ -401,14 +422,34 @@ function selectSlot(s, save = true) {
   const warn = $('#sharedWarn');
   warn.style.display = s.shared ? 'block' : 'none';
   warn.innerHTML = s.shared ? `Shared slot: it also changes the finished maps. It is only built when <b>Include shared slots</b> is ticked${$('#allowShared').checked ? ' (it is)' : ' (it is not)'}.` : '';
+  document.querySelectorAll('#surfTabs button').forEach(b => {
+    b.classList.toggle('on', b.dataset.surf === surface);
+    if (b.dataset.surf === 'floor') b.innerHTML = 'Floors' + (s.floor && s.floor.maps.length ? '<span class="dotf" title="Has its own floor texture"></span>' : '');
+  });
   renderSource();
   renderControls();
   highlightUsed();
   preview.setSlot(s);
 }
+document.querySelectorAll('#surfTabs button').forEach(b => b.onclick = () => {
+  if (surface === b.dataset.surf) return;
+  if (trying) endTry();
+  surface = b.dataset.surf; store.set('surface', surface);
+  if (sel) selectSlot(sel, false);
+});
 
 function renderSource() {
-  const s = sel, src = s.source;
+  const s = E(), src = s.source;
+  if (s.surface === 'floor' && (!s.wallReady || s.usesWall)) {
+    const wall = sel;
+    $('#srcRow').innerHTML = !s.wallReady
+      ? `<div class="grow dim">Give <b>${s.name}</b> a wall texture first${scope ? ' on this map' : ''} (Walls tab). Floors use it until you pick a floor material.</div>`
+      : `<div class="grow"><div class="inheritBox" style="margin:0"><div class="row">
+          <div class="thumb" style="background-image:url(${texUrl(wall, 'albedo')})"></div>
+          <div style="flex:1">Floors use the wall texture <b>${wall.source ? esc(wall.source.asset) : 'Custom'}</b>.
+          <div class="dim">Pick a material on the right to give ${s.name}'s floors their own, e.g. tiles or tread plate.</div></div></div></div></div>`;
+    return;
+  }
   if (scope && s.inherited) {
     $('#srcRow').innerHTML = `<div class="grow"><div class="inheritBox" style="margin:0"><div class="row">
       ${s.maps.length ? `<div class="thumb" style="background-image:url(${texUrl(s, 'albedo')})"></div>` : ''}
@@ -425,10 +466,10 @@ function renderSource() {
       <div class="thumb" style="width:40px;height:40px;border-radius:6px;background:center/cover url(${texUrl(s, 'albedo')})"></div>
       <div class="grow"><b>${src ? esc(src.asset) : 'Custom texture'}</b><div class="dim" style="font-size:12px">
         ${src ? `${src.resolution} · <a href="${esc(src.source)}" target="_blank" rel="noopener">view on ambientCG</a> · ` : ''}maps: ${s.maps.join(', ')}</div></div>
-      <button class="danger" id="clearBtn" title="${scope ? 'Go back to the all-maps texture on this map' : 'Remove the texture from this slot'}">${scope ? 'Remove override' : 'Remove'}</button>`;
+      <button class="danger" id="clearBtn" title="${s.surface === 'floor' ? 'Floors go back to the wall texture' : scope ? 'Go back to the all-maps texture on this map' : 'Remove the texture from this slot'}">${s.surface === 'floor' ? 'Remove floor texture' : scope ? 'Remove override' : 'Remove'}</button>`;
     $('#clearBtn').onclick = async () => {
       const r = await api('/api/clear', withScope({ slot: s.name }));
-      toast(scope ? `<b>${esc(scope)}</b> now uses the all-maps texture for <b>${s.name}</b>.` : `Removed the texture from <b>${s.name}</b>.`, '', undoAction(s.name, r.undo));
+      toast(s.surface === 'floor' ? `<b>${s.name}</b> floors now use the wall texture.` : scope ? `<b>${esc(scope)}</b> now uses the all-maps texture for <b>${s.name}</b>.` : `Removed the texture from <b>${s.name}</b>.`, '', undoAction(s.name, r.undo));
       await loadSlots();
     };
   }
@@ -436,8 +477,8 @@ function renderSource() {
 
 let saveTimer = null;
 function renderControls() {
-  const s = sel, e = s.effective;
-  if (!e || (s.inherited && !s.tempEffective)) { $('#controls').innerHTML = ''; $('#savedHint').textContent = ''; return; }
+  const s = E(), e = s && s.effective;
+  if (!e || ((s.inherited || s.usesWall) && !s.tempEffective)) { $('#controls').innerHTML = ''; $('#savedHint').textContent = ''; return; }
   const row = c => `
     <label for="c_${c.key}" title="${c.help}">${c.label}</label>
     <input type="range" id="c_${c.key}" data-key="${c.key}" min="${c.min}" max="${c.max}" step="${c.step}" value="${e[c.key]}" title="${c.help}">
@@ -445,9 +486,9 @@ function renderControls() {
   $('#controls').innerHTML = `
     <div class="controls">
       ${CONTROLS.filter(c => !c.adv).map(row).join('')}
-      <label for="c_color">Colour</label>
+      ${s.surface === 'floor' ? '<label>Colour</label><div class="dim" style="font-size:13px">Shared with walls (set on the Walls tab)</div><span></span>' : `<label for="c_color">Colour</label>
       <div class="colorRow"><input type="color" id="c_color" value="${toHex(e.color)}">
-        <button class="ghost" id="resetColor" ${JSON.stringify(e.color) === JSON.stringify(s.color) ? 'disabled' : ''}>Reset to original</button></div><span></span>
+        <button class="ghost" id="resetColor" ${JSON.stringify(e.color) === JSON.stringify(s.color) ? 'disabled' : ''}>Reset to original</button></div><span></span>`}
     </div>
     <details class="adv" ${store.get('adv') === '1' ? 'open' : ''}><summary>Advanced</summary>
       <div class="controls">${CONTROLS.filter(c => c.adv).map(row).join('')}</div></details>`;
@@ -457,8 +498,10 @@ function renderControls() {
     e[c.key] = +inp.value; $('#o_' + c.key).textContent = c.fmt(+inp.value);
     preview.update(e); queueSave();
   });
-  $('#c_color').oninput = ev => { e.color = fromHex(ev.target.value); $('#resetColor').disabled = false; preview.update(e); queueSave(); };
-  $('#resetColor').onclick = () => { e.color = s.color.slice(); $('#c_color').value = toHex(e.color); $('#resetColor').disabled = true; preview.update(e); queueSave(); };
+  if ($('#c_color')) {
+    $('#c_color').oninput = ev => { e.color = fromHex(ev.target.value); $('#resetColor').disabled = false; preview.update(e); queueSave(); };
+    $('#resetColor').onclick = () => { e.color = s.color.slice(); $('#c_color').value = toHex(e.color); $('#resetColor').disabled = true; preview.update(e); queueSave(); };
+  }
   $('#savedHint').textContent = '';
 }
 
@@ -469,7 +512,7 @@ function settingsOf(s) {
   return settings;
 }
 function queueSave() {
-  const s = sel;
+  const s = E();
   if (s.tempEffective) { $('#savedHint').textContent = 'Kept when you apply this material'; return; }
   $('#savedHint').textContent = 'Saving…';
   clearTimeout(saveTimer);
@@ -596,10 +639,25 @@ const preview = (() => {
       m.needsUpdate = true;
     }
   }
-  const looks = {};
+  const looks = {}, floorLooks = {}, hasFloor = {};
   const look = name => looks[name] || (looks[name] = new Look());
+  const floorLook = name => floorLooks[name] || (floorLooks[name] = new Look());
+  // Material for a slot's upward-facing faces: its floor set if it has one, otherwise the wall material.
+  const floorMat = name => hasFloor[name] ? floorLook(name).mat : look(name).mat;
   const plainMat = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness: 0.8 });
   const ownSrc = s => ({ key: (scope || '') + ':' + s.name + ':' + s.stamp, url: k => texUrl(s, k), maps: s.maps });
+  const floorSrc = s => {
+    const f = { surface: 'floor', name: s.name, stamp: s.floor.stamp };
+    return { key: (scope || '') + ':' + s.name + ':floor:' + s.floor.stamp, url: k => texUrl(f, k), maps: s.floor.maps };
+  };
+  // BoxGeometry face groups are +x, -x, +y, -y, +z, -z; a face whose world normal points up gets the floor material.
+  const FACE_NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map(v => new THREE.Vector3(...v));
+  const nm = new THREE.Matrix3(), tmp = new THREE.Vector3();
+  function upFaces(mesh) {
+    mesh.updateMatrixWorld(true);
+    nm.getNormalMatrix(mesh.matrixWorld);
+    return FACE_NORMALS.map(n => tmp.copy(n).applyMatrix3(nm).normalize().y > 0.5);
+  }
 
   // ---- geometry
   const geoCache = {};
@@ -655,8 +713,11 @@ const preview = (() => {
   function applyMaterials() {
     for (const m of meshes) {
       const slotName = mode === 'map' ? m.userData.slot : current && current.name;
-      m.material = slotName ? look(slotName).mat : plainMat;
       m.castShadow = m.receiveShadow = true;
+      if (!slotName) { m.material = plainMat; continue; }
+      if (m.geometry.type !== 'BoxGeometry') { m.material = look(slotName).mat; continue; }
+      if (!m.userData.up) m.userData.up = upFaces(m);
+      m.material = m.userData.up.map(up => up ? floorMat(slotName) : look(slotName).mat);
     }
   }
   function setSample(name) {
@@ -744,9 +805,13 @@ const preview = (() => {
     for (const n of names) {
       const s = slots.find(x => x.name === n);
       if (!s) continue;
-      const isSel = current && n === current.name;
-      const src = isSel && currentSrc ? currentSrc : ownSrc(s);
-      look(n).load(s, src, (isSel ? current.effective : s.effective) || defaultsFor(s));
+      const isSel = current && n === current.name, tryingHere = isSel && currentSrc;
+      const wallTry = tryingHere && surface === 'wall', floorTry = tryingHere && surface === 'floor';
+      look(n).load(s, wallTry ? currentSrc : ownSrc(s), (isSel && surface === 'wall' ? current.effective : s.effective) || defaultsFor(s));
+      const f = s.floor || { maps: [] };
+      hasFloor[n] = !!(floorTry || f.maps.length);
+      if (floorTry) floorLook(n).load(s, currentSrc, E().effective || s.effective || defaultsFor(s));
+      else if (f.maps.length) floorLook(n).load(s, floorSrc(s), (isSel && surface === 'floor' ? E().effective : f.effective) || s.effective);
     }
     applyMaterials();
   }
@@ -761,7 +826,10 @@ const preview = (() => {
     } else refreshLooks();
     if (mode !== 'map') $('#viewEmpty').textContent = (src || s.maps.length) ? '' : 'Untextured: this is the flat greybox colour.';
   }
-  function update(e) { if (current) look(current.name).update(e); }
+  function update(e) {
+    if (!current) return;
+    (surface === 'floor' && hasFloor[current.name] ? floorLook(current.name) : look(current.name)).update(e);
+  }
 
   // Briefly glow the selected slot's surfaces so they are easy to find in a map.
   let flashUntil = 0, flashSlot = null;
@@ -855,7 +923,7 @@ const preview = (() => {
       camera.lookAt(t);
     }
     // Selected-slot glow after selecting/clicking in a map.
-    for (const [n, l] of Object.entries(looks)) {
+    for (const [n, l] of Object.entries(looks).concat(Object.entries(floorLooks))) {
       const glow = n === flashSlot && now < flashUntil ? 0.35 * Math.abs(Math.sin((flashUntil - now) / 1400 * Math.PI * 3)) : 0;
       l.mat.emissive.setRGB(glow, glow * 0.55, glow * 0.2);
     }
@@ -925,7 +993,8 @@ function cardHtml(a) {
     <div class="apply">Try on ${sel ? sel.name : 'slot'}</div></div>`;
 }
 function highlightUsed() {
-  const used = sel && sel.source ? sel.source.asset : null;
+  const t = sel && E();
+  const used = t && t.source && !t.usesWall ? t.source.asset : null;
   document.querySelectorAll('.card').forEach(c => {
     c.classList.toggle('used', c.dataset.id === used);
     c.querySelector('.apply').textContent = c.dataset.id === used ? `In use on ${sel.name}` :
@@ -937,12 +1006,12 @@ const undoStack = [];
 async function runUndo(entry) {
   const i = undoStack.indexOf(entry); if (i < 0) return;
   undoStack.splice(i, 1);
-  await api('/api/undo', entry.scope ? { slot: entry.slot, undo: entry.id, map: entry.scope } : { slot: entry.slot, undo: entry.id });
+  await api('/api/undo', Object.assign({ slot: entry.slot, undo: entry.id }, entry.scope ? { map: entry.scope } : {}, entry.surface === 'floor' ? { surface: 'floor' } : {}));
   toast(`Restored <b>${entry.slot}</b>.`);
   await loadSlots();
   const s = slots.find(x => x.name === entry.slot); if (s) selectSlot(s);
 }
-const undoAction = (slot, id) => { const entry = { slot, id, scope }; undoStack.push(entry); return { label: 'Undo', run: () => runUndo(entry) }; };
+const undoAction = (slot, id) => { const entry = { slot, id, scope, surface }; undoStack.push(entry); return { label: 'Undo', run: () => runUndo(entry) }; };
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches?.('input, select')) {
     e.preventDefault();
@@ -973,7 +1042,8 @@ function endTry() {
   trying = null; $('#tryBar').style.display = 'none';
   document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying'));
   highlightUsed();
-  if (sel && sel.tempEffective) { sel.effective = sel.savedEffective || null; sel.tempEffective = false; renderControls(); }
+  const t = sel && E();
+  if (t && t.tempEffective) { t.effective = t.savedEffective || null; t.tempEffective = false; renderControls(); }
   if (sel) { renderSource(); preview.setSlot(sel); }
 }
 async function applyMaterial(a, res, slot) {
@@ -984,10 +1054,11 @@ async function applyMaterial(a, res, slot) {
       ? await api('/api/assign_upload', withScope({ slot: slot.name, id: a.upload, label: a.name }))
       : await api('/api/assign', withScope({ slot: slot.name, asset: a.id, resolution: res }));
     // Keep any slider changes made while trying.
-    if (slot.effective) await api('/api/settings', withScope({ slot: slot.name, settings: settingsOf(slot) }));
+    const t = E();
+    if (t && t.effective) await api('/api/settings', withScope({ slot: slot.name, settings: settingsOf(t) }));
     trying = null; $('#tryBar').style.display = 'none';
     document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying'));
-    toast(`<b>${esc(a.name)}</b> applied to <b>${slot.name}</b>${scope ? ` on <b>${esc(scope)}</b> only` : ''}. Build &amp; install to see it in-game.`, 'ok', undoAction(slot.name, r.undo));
+    toast(`<b>${esc(a.name)}</b> applied to <b>${slot.name}</b>${surface === 'floor' ? ' floors' : ''}${scope ? ` on <b>${esc(scope)}</b> only` : ''}. Build &amp; install to see it in-game.`, 'ok', undoAction(slot.name, r.undo));
     await loadSlots();
   } catch (err) {
     toast(`Could not apply ${esc(a.name)}: ${esc(err.message)}`, 'bad');
@@ -996,16 +1067,20 @@ async function applyMaterial(a, res, slot) {
 }
 // Your own textures: drag files onto the window or use the button; they go through the same try/apply flow.
 function enterTry(slot, a, stage, sub, res = null) {
+  const t = E();
+  if (t.surface === 'floor' && !t.wallReady) { toast(`Give ${slot.name} a wall texture first (Walls tab).`, 'bad'); document.querySelectorAll('.card.trying').forEach(c => c.classList.remove('trying')); return; }
   trying = { a, res, slot: slot.name };
   highlightUsed();
-  if (!slot.effective || slot.inherited) {
-    slot.savedEffective = slot.effective;
-    slot.effective = slot.effective ? JSON.parse(JSON.stringify(slot.effective)) : defaultsFor(slot);
-    slot.tempEffective = true; renderControls();
+  if (!t.effective || t.inherited || t.usesWall) {
+    t.savedEffective = t.effective;
+    const base = t.effective || (t.surface === 'floor' ? slot.effective : null);
+    t.effective = base ? JSON.parse(JSON.stringify(base)) : defaultsFor(slot);
+    if (t.surface === 'floor' && t.usesWall) t.effective.tint_strength = 0;
+    t.tempEffective = true; renderControls();
   }
   preview.setSlot(slot, { key: 'stage:' + stage.id, url: k => `/stage/${stage.id}/${k}`, maps: stage.maps });
   $('#tryBar').style.display = 'flex';
-  $('#tryBar').innerHTML = `${a.preview ? `<img src="${esc(a.preview)}" alt="">` : `<img src="/stage/${stage.id}/albedo" alt="">`}<div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}</b>${scope ? ` (${esc(scope)} only)` : ''}
+  $('#tryBar').innerHTML = `${a.preview ? `<img src="${esc(a.preview)}" alt="">` : `<img src="/stage/${stage.id}/albedo" alt="">`}<div class="grow">Trying <b>${esc(a.name)}</b> on <b>${slot.name}${surface === 'floor' ? ' floors' : ''}</b>${scope ? ` (${esc(scope)} only)` : ''}
     <div class="dim" style="font-size:12px">${sub} · not applied yet</div></div>
     <button class="ghost" id="tryCompare" title="Hold to see what ${slot.name} looks like now (or hold C)">Hold to compare</button>
     <button class="ghost" id="tryCancel">Cancel</button><button class="primary" id="tryApply">Apply to ${slot.name}</button>`;

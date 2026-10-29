@@ -81,6 +81,30 @@ def slot_settings(cfg, name, folder=None):
     return s, maps
 
 
+FLOOR_DIR = 'floor'
+SURFACE_KEYS = ('tile_size', 'tint_strength', 'tint_mean', 'normal_strength', 'roughness', 'metallic')
+
+
+def floor_settings(cfg, name, folder, wall):
+    """Settings and maps for upward-facing surfaces: <slot folder>/floor/ if it has textures, otherwise the wall set.
+    Floor settings start from the wall's (colour and edge blend are shared) and floor/settings.json overrides them."""
+    floor_folder = os.path.join(folder, FLOOR_DIR)
+    maps = find_maps(name, floor_folder)
+    if not maps:
+        return {k: wall[k] for k in SURFACE_KEYS}, {}
+    s = {k: wall[k] for k in SURFACE_KEYS}
+    s['tint_mean'] = albedo_mean(maps['albedo']) if 'albedo' in maps else 0.5
+    s['roughness'], s['metallic'] = (1.0, 1.0) if 'orm' in maps else (cfg['slots'][name]['roughness'], cfg['slots'][name]['metallic'])
+    user = os.path.join(floor_folder, 'settings.json')
+    if os.path.exists(user):
+        extra = json.load(open(user))
+        unknown = set(extra) - set(SETTINGS_KEYS)
+        if unknown:
+            sys.exit('%s: unknown settings %s (allowed: %s)' % (user, sorted(unknown), ', '.join(SETTINGS_KEYS)))
+        s.update({k: v for k, v in extra.items() if k in SURFACE_KEYS})
+    return s, maps
+
+
 # ---------------------------------------------------------------- per-map overrides
 # textures/_maps/<Map>/<Slot>/ holds a texture set used only by that map. The build gives the map its own copy of
 # the slot's material at a path of exactly the same length, and patches the map's name table to point at it.
@@ -209,6 +233,7 @@ def make_job(cfg, enabled, defaults, overrides):
     materials, instances = [], []
 
     def add(slot_name, asset, folder, tex_folder, tex_prefix):
+        folder = folder or os.path.join(TEXTURES, slot_name)
         s, maps = slot_settings(cfg, slot_name, folder)
         for k in MAPS:
             if k in maps:
@@ -217,6 +242,15 @@ def make_job(cfg, enabled, defaults, overrides):
                 s[k] = dest
             else:
                 s[k] = '%s/Default/T_Default_%s' % (tex_root, k)
+        floor, floor_maps = floor_settings(cfg, slot_name, folder, s)
+        for k in MAPS:
+            if k in floor_maps:
+                dest = '%s/%s/%s_floor_%s' % (tex_root, tex_folder, tex_prefix, k)
+                textures.append({'src': floor_maps[k], 'dest': dest, 'kind': k})
+                floor[k] = dest
+            else:
+                floor[k] = s[k] if not floor_maps else '%s/Default/T_Default_%s' % (tex_root, k)
+        s['floor'] = floor
         kind = cfg['slots'][slot_name]['kind']
         (materials if kind == 'material' else instances).append({'asset': asset, 'params': s})
 
@@ -232,6 +266,7 @@ def make_job(cfg, enabled, defaults, overrides):
              if passthroughs and s['unless_slot'] not in enabled}
     parent_defaults = dict(cfg['defaults'], color=[0.5, 0.5, 0.5], roughness=0.5, metallic=0.0, tint_mean=0.5,
                            **{k: '%s/Default/T_Default_%s' % (tex_root, k) for k in MAPS})
+    parent_defaults['floor'] = {k: parent_defaults[k] for k in SURFACE_KEYS + MAPS}
     return {'parent_material': cfg['parent_material'], 'parent_defaults': parent_defaults,
             'textures': textures, 'materials': materials, 'instances': instances,
             'passthroughs': passthroughs, 'stubs': stubs,
@@ -359,10 +394,13 @@ def snapshot(cfg):
             folder = map_folder(scope, name) if scope else os.path.join(TEXTURES, name)
             maps = find_maps(name, folder)
             if maps:
-                settings = os.path.join(folder, 'settings.json')
-                snap[(scope + '/' if scope else '') + name] = {
-                    'files': {k: [os.path.getsize(f), int(os.path.getmtime(f))] for k, f in maps.items()},
-                    'settings': json.load(open(settings)) if os.path.exists(settings) else {}}
+                for sub, sub_maps in (('', maps), ('/floor', find_maps(name, os.path.join(folder, FLOOR_DIR)))):
+                    if not sub_maps:
+                        continue
+                    settings = os.path.join(folder + sub.replace('/', os.sep), 'settings.json')
+                    snap[(scope + '/' if scope else '') + name + sub] = {
+                        'files': {k: [os.path.getsize(f), int(os.path.getmtime(f))] for k, f in sub_maps.items()},
+                        'settings': json.load(open(settings)) if os.path.exists(settings) else {}}
     return snap
 
 
