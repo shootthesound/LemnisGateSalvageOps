@@ -6,6 +6,6 @@ public class LemnisGateEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
-		ExtraModuleNames.Add("LemnisGate");
+		ExtraModuleNames.AddRange(new string[] { "LemnisGate", "MapBuilder" });
 	}
 }

@@ -114,7 +114,7 @@ void AMapKitActor::PreInitializeComponents()
 	Super::PreInitializeComponents();
 #if WITH_EDITORONLY_DATA
 	UWorld* World = GetWorld();
-	if (!World || World->WorldType != EWorldType::PIE)
+	if (!World || !World->IsGameWorld())  // Play in Editor or the map builder: never the real game
 	{
 		return;
 	}

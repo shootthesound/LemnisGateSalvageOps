@@ -18,6 +18,9 @@
     python mapkit/kit.py remove <Name>      delete one of your maps (frees its slot)
     python mapkit/kit.py light <Map|Name> [--quality Medium]
                                             bake lighting for a level (Lightmass; packed with it from then on)
+    python mapkit/kit.py builder [<Map>]    open a map in the map builder (fly around, select, move, copy, delete)
+    python mapkit/kit.py apply <Map>        apply the builder's saved edits to the map
+    python mapkit/kit.py play <Map>         apply, re-bake if baked, build, install and start the game
     python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
 
 The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
@@ -29,6 +32,7 @@ import os
 import re
 import shutil
 import struct
+import time
 import zlib
 import subprocess
 import sys
@@ -68,7 +72,8 @@ def write_project():
     # Fresh timestamps, or UnrealHeaderTool may judge its generated code up to date and miss new functions.
     shutil.copytree(os.path.join(KIT, 'Source'), src, copy_function=shutil.copy)
     json.dump({'FileVersion': 3, 'EngineAssociation': '4.26', 'Category': '', 'Description': '',
-               'Modules': [{'Name': 'LemnisGate', 'Type': 'Runtime', 'LoadingPhase': 'Default'}],
+               'Modules': [{'Name': 'LemnisGate', 'Type': 'Runtime', 'LoadingPhase': 'Default'},
+                           {'Name': 'MapBuilder', 'Type': 'Runtime', 'LoadingPhase': 'Default'}],
                'Plugins': [{'Name': 'PythonScriptPlugin', 'Enabled': True},
                            {'Name': 'EditorScriptingUtilities', 'Enabled': True}]},
               open(UPROJECT, 'w'), indent=1)
@@ -649,6 +654,76 @@ def bake_lighting(args):
     print('Baked: %s. Build to pack it.' % built)
 
 
+# ---------------------------------------------------------------- the map builder
+
+BUILDER_DIR = os.path.join(PROJECT, 'Saved', 'MapBuilder')
+
+
+def edits_file(level):
+    return os.path.join(BUILDER_DIR, level.rsplit('/', 1)[1] + '.edits.json')
+
+
+def write_profile(name):
+    """What the builder needs to know about this game: for now, how to build and play a map. (The builder core is
+    game-agnostic; parts, gameplay objects and mode rules will come from here too.)"""
+    os.makedirs(BUILDER_DIR, exist_ok=True)
+    path = os.path.join(BUILDER_DIR, 'profile.json')
+    json.dump({'game': 'Lemnis Gate',
+               'build': [sys.executable, os.path.abspath(__file__), 'play', name]}, open(path, 'w'), indent=1)
+    return path
+
+
+def builder(args, test_folder=None, camera=None):
+    """Open a kit level in the map builder (its own window: fly around, select and edit)."""
+    level = level_of(args, args.map) if args.map else '/Game/MapKit/ObjectLibrary'
+    editor, _ = build.engine_tools(args.ue)
+    gui = editor.replace('UE4Editor-Cmd.exe', 'UE4Editor.exe')
+    cmd = [gui, UPROJECT, '%s?game=/Script/MapBuilder.MapBuilderGameMode' % level, '-game', '-windowed',
+           '-ResX=1600', '-ResY=900', '-nosplash', '-MapBuilderProfile=' + write_profile(args.map or '')]
+    if camera:
+        cmd.append('-MapBuilderCamera=' + ','.join('%g' % v for v in camera))
+    if test_folder:
+        os.makedirs(test_folder, exist_ok=True)
+        cmd.append('-MapBuilderTest=' + test_folder)
+        return subprocess.call(cmd)
+    subprocess.Popen(cmd)
+    print('Map builder opening %s' % level)
+
+
+def apply_edits(args):
+    """Apply the map builder's saved edits to a kit level. The edits file is archived afterwards: copies get new
+    names in the level, so applying the same edits again would copy them again."""
+    level = level_of(args, args.map)
+    path = edits_file(level)
+    if not os.path.exists(path):
+        print('No builder edits for %s' % level)
+        return False
+    result = editor_script(args, 'apply_edits.py', {'edits': path}, 'mapkit_apply.log')
+    print('  %d moved, %d added, %d deleted%s' % (result['moved'], result['added'], result['deleted'],
+          ('; not found: ' + ', '.join(result['missing'])) if result['missing'] else ''))
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    os.replace(path, path.replace('.edits.json', '.applied-%s.json' % stamp))
+    return True
+
+
+def play(args):
+    """Apply the builder's edits, re-bake the lighting if the map has a bake, build, install and start the game."""
+    level = level_of(args, args.map)
+    print('[1/4] Applying the builder\'s edits')
+    apply_edits(args)
+    if os.path.exists(os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '_BuiltData.uasset')):
+        print('[2/4] Baking lighting')
+        bake_lighting(args)
+    else:
+        print('[2/4] (no baked lighting)')
+    print('[3/4] Building')
+    args.install = True
+    build_maps(args)
+    print('[4/4] Starting the game')
+    win64 = os.path.join(args.game or build.find_game(), 'LemnisGate', 'Binaries', 'Win64')
+    subprocess.Popen([os.path.join(win64, 'LemnisGate-Win64-Shipping.exe')], cwd=win64)
+
+
 def kit_levels():
     """Levels in the kit project, as content-relative paths (Levels/Playable/CTF_Arches.umap)."""
     content = os.path.join(PROJECT, 'Content')
@@ -737,7 +812,7 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'materials', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'light', 'build'])
+    ap.add_argument('command', choices=['setup', 'materials', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'light', 'builder', 'apply', 'play', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
@@ -754,10 +829,11 @@ def main():
     ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
     ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
     args = ap.parse_args()
-    if args.command in ('import', 'new', 'mode', 'remove', 'light') and not args.map:
+    if args.command in ('import', 'new', 'mode', 'remove', 'light', 'apply', 'play') and not args.map:
         ap.error('%s needs a map name' % args.command)
     {'setup': setup, 'materials': make_materials, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
-     'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'light': bake_lighting, 'build': build_maps}[args.command](args)
+     'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'light': bake_lighting, 'builder': builder, 'apply': apply_edits,
+     'play': play, 'build': build_maps}[args.command](args)
 
 
 if __name__ == '__main__':

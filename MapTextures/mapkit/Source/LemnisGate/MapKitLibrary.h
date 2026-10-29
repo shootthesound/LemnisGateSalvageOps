@@ -63,6 +63,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static bool SaveLevel(UWorld* World);
 
+	// Open a saved level for editing in a commandlet (e.g. to apply the map builder's edits).
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static UWorld* LoadLevel(const FString& PackagePath);
+
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static AActor* FindActor(UWorld* World, FName Name);
+
+	// A copy of an actor (its components and settings) placed at Transform.
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static AActor* DuplicateActor(AActor* Source, FTransform Transform);
+
 	// Give an AtmosphericFogComponent precomputed sky tables (raw files taken from a game map). The editor only
 	// computes them while rendering, which a commandlet never does.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")

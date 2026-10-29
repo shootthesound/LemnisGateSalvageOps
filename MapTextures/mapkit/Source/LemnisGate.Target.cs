@@ -6,6 +6,6 @@ public class LemnisGateTarget : TargetRules
 	{
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
-		ExtraModuleNames.Add("LemnisGate");
+		ExtraModuleNames.AddRange(new string[] { "LemnisGate", "MapBuilder" });
 	}
 }

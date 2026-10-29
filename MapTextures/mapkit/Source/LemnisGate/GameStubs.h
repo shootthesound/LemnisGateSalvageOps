@@ -119,8 +119,8 @@ public:
 #endif
 	virtual void OnConstruction(const FTransform& Transform) override;
 
-	// Play in Editor: drop event bindings to the game's functions, which the stand-ins don't have (calling one would
-	// crash the editor). The saved level keeps them.
+	// Play in Editor and the map builder: drop event bindings to the game's functions, which the stand-ins don't have (calling one
+	// would crash). The saved level keeps them.
 	virtual void PreInitializeComponents() override;
 };
 

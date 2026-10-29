@@ -8,6 +8,7 @@
 #include "Atmosphere/AtmosphericFogComponent.h"
 #include "Misc/FileHelper.h"
 #include "Engine/StaticMesh.h"
+#include "FileHelpers.h"
 #include "Materials/MaterialInterface.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Serialization/MemoryReader.h"
@@ -622,6 +623,41 @@ bool UMapKitLibrary::SnapToGround(AActor* Actor, float Up, float Down)
 	}
 	Actor->SetActorLocation(Hit.ImpactPoint);
 	return true;
+}
+
+UWorld* UMapKitLibrary::LoadLevel(const FString& PackagePath)
+{
+#if WITH_EDITOR
+	return UEditorLoadingAndSavingUtils::LoadMap(PackagePath);
+#else
+	return nullptr;
+#endif
+}
+
+AActor* UMapKitLibrary::FindActor(UWorld* World, FName Name)
+{
+	return World && World->PersistentLevel ? FindObjectFast<AActor>(World->PersistentLevel, Name) : nullptr;
+}
+
+AActor* UMapKitLibrary::DuplicateActor(AActor* Source, FTransform Transform)
+{
+	if (!Source || !Source->GetWorld())
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters Params;
+	Params.Template = Source;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Copy = Source->GetWorld()->SpawnActor(Source->GetClass(), &Transform, Params);
+	if (Copy)
+	{
+		Copy->SetActorTransform(Transform);  // spawning combines the template's own placement with Transform
+		Copy->SpawnCollisionHandlingMethod = Source->SpawnCollisionHandlingMethod;
+#if WITH_EDITOR
+		Copy->SetActorLabel(Source->GetActorLabel());
+#endif
+	}
+	return Copy;
 }
 
 void UMapKitLibrary::MakeBoxBrush(AVolume* Volume, FVector Size)
