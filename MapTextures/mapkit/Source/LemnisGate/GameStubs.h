@@ -45,14 +45,37 @@ class UExtendedHitCapsule : public UCapsuleComponent { GENERATED_BODY() };
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class UFlagAnimatorComponent : public UActorComponent { GENERATED_BODY() };
 
+// Events Blueprints bind to (the level saves the bindings; see AMapKitActor::ComponentEvents). Only the property
+// names and kinds matter for that, not the signatures.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnIdleAnimationChanged);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FInteractionSignature);
+
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
-class UIdleBreaksComponent : public UActorComponent { GENERATED_BODY() };
+class UIdleBreaksComponent : public UActorComponent
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(BlueprintAssignable)
+	FOnIdleAnimationChanged OnIdleAnimationChangedDelegate;
+};
 
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class UPerlinNoiseAnimationComponent : public USceneComponent { GENERATED_BODY() };
 
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
-class UInteractionComponent : public USceneComponent { GENERATED_BODY() };
+class UInteractionComponent : public USceneComponent
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(BlueprintAssignable)
+	FInteractionSignature OnInteractionStart;
+
+	UPROPERTY(BlueprintAssignable)
+	FInteractionSignature OnInteractionCancel;
+
+	UPROPERTY(BlueprintAssignable)
+	FInteractionSignature OnInteractionEnd;
+};
 
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class UCharacterStateMachineComponent : public UActorComponent { GENERATED_BODY() };

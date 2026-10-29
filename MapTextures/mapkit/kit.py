@@ -328,6 +328,23 @@ def foliage_jobs(paks, umap):
     return jobs
 
 
+# Component settings the editor changes on placed copies, pinned back to the game template's value. (A turret's
+# ChildActor: the editor saves bReplicates False, the game's template has True.)
+PINNED = {'ChildActorComponent': ('bReplicates',)}
+
+
+def pin_template_values(sc):
+    path = os.path.join(build.BUILD, 'mapkit_blueprints.json')
+    cat = json.load(open(path)) if os.path.exists(path) else {}
+    for a in sc['actors']:
+        bp = cat.get(a['class'].rsplit('.', 1)[0])
+        for n in (bp or {}).get('nodes', []):
+            for prop in PINNED.get(n['class'], ()):
+                value = n['template'].get('values', {}).get(prop)
+                if value is not None:
+                    a.setdefault('component_values', {}).setdefault('%s.%s' % (n['name'], prop), value)
+
+
 def rebuild(args, paks, umap, level):
     existing = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '.umap')
     if os.path.exists(existing):
@@ -336,6 +353,7 @@ def rebuild(args, paks, umap, level):
     sc = scene.export(paks, umap)
     sc['landscapes'] = [] if args.gameplay_only or args.no_terrain else landscape_jobs(paks, umap)
     sc['foliage'] = [] if args.gameplay_only or args.no_foliage else foliage_jobs(paks, umap)
+    pin_template_values(sc)
     if args.gameplay_only:
         sc['actors'] = [a for a in sc['actors'] if a['class'] not in GEOMETRY]
     print('  %d actors' % len(sc['actors']))

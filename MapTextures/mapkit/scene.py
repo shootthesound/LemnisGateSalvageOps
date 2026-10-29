@@ -269,6 +269,8 @@ class Scene:
             if not cls:
                 continue
             props = self.tagged(i)
+            if 'ParentComponent' in props:
+                continue  # a child actor: its parent's ChildActorComponent creates it
             actor = {'name': e['name'], 'class': cls, 'props': {}, 'components': {},
                      'component_refs': {k: name for k, (name, _) in self.component_refs(i, props).items()}}
             root = props.get('RootComponent', (None, None))[1]
