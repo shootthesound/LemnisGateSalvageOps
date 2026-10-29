@@ -81,10 +81,35 @@ For example:
 Materials show as grey in the editor (only the prototype slots have the kit's textures), but the game uses the real
 ones.
 
+## Terrain
+
+Any map can have terrain. Create it in the editor:
+
+1. Open **Landscape** mode, then the **New** tab.
+2. Set the material to one of the kit's terrain materials in `Content/SalvageOps/Terrain`:
+   - `MI_Terrain_Grassland`
+   - `MI_Terrain_Desert`
+   - `MI_Terrain_Dirt`
+   - `MI_Terrain_Snow`
+   - `MI_Terrain_Rocky`
+3. Click **Create**, then sculpt.
+
+The materials put the ground texture on flat areas and rock on slopes by themselves, so there's nothing to paint.
+Change the look per map by making a material instance of `M_Terrain`. Its settings are the flat and slope textures,
+`TileSize`, `SlopeStart` and `SlopeWidth`.
+
+Importing a map that has terrain rebuilds its shape from the game's heightmap. The game's own terrain materials can't
+be rebuilt, so the import picks the closest kit material (desert for desert maps, and so on). Change it on the
+Landscape actor.
+
+The kit's terrain materials and textures go into the maps pak, adding about 45 MB.
+
 ## Rules
 
-- **Only use what the game has.** The pak only carries map files. New meshes, materials or Blueprints you create would
-  be missing in game, and the build refuses them.
+- **Only use what the game has, plus `/Game/SalvageOps`.**
+  - The pak carries your maps plus the kit's own assets under `/Game/SalvageOps`.
+  - Other new meshes, materials or Blueprints would be missing in game, and the build refuses them.
+  - To make your own assets, put them under `Content/SalvageOps`.
 - **Don't press Play in the editor.** The stand-ins don't contain the game's logic, and touching a flag or jump pad in
   the editor would call an event they don't have.
 - **Spawn points need a team.** Select one and set **Team Side** to Attacker or Defender. The `*_Box` maps show the
@@ -92,9 +117,7 @@ ones.
 - **Lighting is dynamic.** Lights work as placed, with no lighting build. The prototype arenas are lit the same way.
   The finished maps (CTF_TheNest, DM_Trident, CAP_Chimera and the others in `Levels/CAPMap`, `CTFMap`, `DSTMap`) use
   baked lighting that the kit doesn't carry over yet, so rebuilt copies of them look flatter.
-- **Not rebuilt yet:** terrain (Landscape) and foliage. Importing a map that uses them, such as CTF_Box, DM_Box or
-  CTF_TheNest, leaves them out with a warning. Start from maps without them: CAP_Box, ASN_Box, CTF_Arches and the
-  other prototype arenas.
+- **Not rebuilt yet:** foliage. Importing a map that uses it (16 of the game's maps) leaves it out with a warning.
 - **Not wired up yet:** capture turrets and the reset-loop button (their interaction events).
 
 ## How it works

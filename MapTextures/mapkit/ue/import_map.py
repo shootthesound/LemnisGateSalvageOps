@@ -130,6 +130,17 @@ def main():
         except Exception as e:
             failed[a['name']] = str(e)
             log('FAILED %s (%s): %s' % (a['name'], a['class'], e))
+    for land in scene.get('landscapes', []):
+        material = load(land['material'] + '.' + land['material'].rsplit('/', 1)[1])
+        transform = unreal.Transform(convert('Vector', land['location']), convert('Rotator', land['rotation']),
+                                     convert('Vector', land['scale']))
+        actor = LIB.import_landscape(world, land['file'], unreal.IntPoint(*land['min']), unreal.IntPoint(*land['max']),
+                                     land['subsections'], land['subsection_quads'], transform, material, land['name'])
+        if actor:
+            spawned += 1
+        else:
+            failed[land['name']] = 'terrain import failed'
+            log('FAILED terrain %s' % land['name'])
     if not LIB.save_level(world):
         raise RuntimeError('could not save ' + level)
     return {'spawned': spawned, 'failed': failed, 'placeholders': made,

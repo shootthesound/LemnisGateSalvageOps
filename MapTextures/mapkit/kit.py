@@ -3,6 +3,7 @@
     python mapkit/kit.py setup              generate the editor project, compile its stand-in C++ module and
                                             create stand-ins for the game's gameplay Blueprints
     python mapkit/kit.py meshes             (re)create editor copies of the game's meshes (part of setup)
+    python mapkit/kit.py terrain            (re)make the terrain materials (part of setup)
     python mapkit/kit.py library            (re)make the object library level, /Game/MapKit/ObjectLibrary
     python mapkit/kit.py import <Map>       recreate a game map (e.g. CTF_Arches) as an editable level
         --as <Slot>                         ...saved as another map, e.g. import CTF_Box --as CTF_Fork to start a
@@ -23,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -34,6 +36,7 @@ import bpinfo  # noqa: E402
 import mapgeo  # noqa: E402
 import maplist  # noqa: E402
 import meshes  # noqa: E402
+import terrain  # noqa: E402
 import scene  # noqa: E402
 import verify  # noqa: E402
 
@@ -164,22 +167,54 @@ def editor_script(args, script, job, log):
 
 def setup(args):
     paks = pakfile.game_paks(args.game or build.find_game())
-    print('[1/6] Writing the Map Kit project')
+    print('[1/7] Writing the Map Kit project')
     write_project()
     copy_materials()
-    print('[2/6] Compiling the stand-in C++ module (needs Visual Studio 2019 or later with C++)')
+    print('[2/7] Compiling the stand-in C++ module (needs Visual Studio 2019 or later with C++)')
     compile_module(args.ue)
-    print('[3/6] Reading the game\'s gameplay Blueprints')
+    print('[3/7] Reading the game\'s gameplay Blueprints')
     cat = blueprint_catalog(paks)
     json.dump(cat, open(os.path.join(build.BUILD, 'mapkit_blueprints.json'), 'w'), indent=1)
     print('  %d Blueprints' % len(cat))
-    print('[4/6] Copying the game\'s meshes into the editor (the stand-ins use them)')
+    print('[4/7] Copying the game\'s meshes into the editor (the stand-ins use them)')
     import_meshes(args, paks, cat)
-    print('[5/6] Creating Blueprint stand-ins in the editor')
+    print('[5/7] Creating Blueprint stand-ins in the editor')
     make_stubs(args, cat)
-    print('[6/6] Laying out the object library')
+    print('[6/7] Making the terrain materials')
+    make_terrain(args)
+    print('[7/7] Laying out the object library')
     make_library(args, paks, cat)
     print('Done: %s' % UPROJECT)
+
+
+# Terrain sets: (flat ground, slopes), ambientCG CC0 textures.
+TERRAIN_SETS = {'Grassland': ('Grass004', 'Rock030'), 'Desert': ('Ground080', 'Rock030'),
+                'Dirt': ('Ground048', 'Ground068'), 'Snow': ('Snow004', 'Rock035'), 'Rocky': ('Gravel022', 'Rock035')}
+TERRAIN_RES = '1K'
+TERRAIN_ROOT = '/Game/SalvageOps/Terrain'
+
+
+def terrain_material(game_material):
+    """The kit terrain set standing in for one of the game's landscape materials (theirs can't be rebuilt)."""
+    name = (game_material or '').lower()
+    for key, terrain_set in (('desert', 'Desert'), ('sand', 'Desert'), ('snow', 'Snow'), ('ice', 'Snow'),
+                             ('rock', 'Rocky'), ('cliff', 'Rocky'), ('dirt', 'Dirt'), ('mud', 'Dirt')):
+        if key in name:
+            return '%s/MI_Terrain_%s' % (TERRAIN_ROOT, terrain_set)
+    return '%s/MI_Terrain_Grassland' % TERRAIN_ROOT
+
+
+def make_terrain(args):
+    import studio  # its ambientCG download and texture conversion
+    folders = {}
+    for tid in sorted({t for pair in TERRAIN_SETS.values() for t in pair}):
+        folder = os.path.join(build.BUILD, 'terrain_textures', tid)
+        if not os.path.exists(os.path.join(folder, 'albedo.png')):
+            import zipfile
+            studio.convert(zipfile.ZipFile(studio.acg_zip(tid, TERRAIN_RES)), tid, folder)
+        folders[tid] = folder
+    result = editor_script(args, 'make_terrain.py', {'textures': folders, 'sets': TERRAIN_SETS}, 'mapkit_terrain.log')
+    print('  %s' % ', '.join(m.rsplit('_', 1)[1] for m in result['materials']))
 
 
 def make_stubs(args, cat):
@@ -261,18 +296,41 @@ def import_map(args):
     rebuild(args, paks, umap, '/Game/' + target[len('LemnisGate/Content/'):-len('.umap')])
 
 
+def landscape_jobs(paks, umap):
+    """The map's terrains as heightmap files plus placement, for import_map.py."""
+    try:
+        ubulk = pakfile.find(paks, umap[:-5] + '.ubulk')
+    except KeyError:
+        ubulk = None
+    jobs = []
+    for k, land in enumerate(terrain.landscapes(scene.Scene(paks, umap), ubulk)):
+        path = os.path.join(build.BUILD, 'mapkit_heights_%d.r16' % k)
+        open(path, 'wb').write(struct.pack('<%dH' % len(land['heights']), *land['heights']))
+        jobs.append({'file': path, 'name': land['name'], 'min': land['min'],
+                     'max': (land['min'][0] + land['size'][0] - 1, land['min'][1] + land['size'][1] - 1),
+                     'subsections': land['subsections'], 'subsection_quads': land['subsection_quads'],
+                     'location': land['location'], 'rotation': land['rotation'], 'scale': land['scale'],
+                     'material': terrain_material(land['material']), 'game_material': land['material']})
+    return jobs
+
+
 def rebuild(args, paks, umap, level):
     existing = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '.umap')
     if os.path.exists(existing):
         os.remove(existing)
     print('[1/2] Reading %s' % umap)
     sc = scene.export(paks, umap)
+    sc['landscapes'] = [] if args.gameplay_only else landscape_jobs(paks, umap)
     if args.gameplay_only:
         sc['actors'] = [a for a in sc['actors'] if a['class'] not in GEOMETRY]
     print('  %d actors' % len(sc['actors']))
     if sc['not_rebuilt'] and not args.gameplay_only:
-        print('  WARNING: this map\'s %s cannot be rebuilt yet, so the copy has no terrain/foliage. Pick a map '
-              'without them (e.g. CAP_Box, ASN_Box, CTF_Arches) or use --gameplay-only.' % ', '.join(sc['not_rebuilt']))
+        print('  WARNING: this map\'s %s cannot be rebuilt yet, so the copy has no foliage.'
+              % ', '.join(sc['not_rebuilt']))
+    for land in sc['landscapes']:
+        print('  terrain %s: %dx%d, drawn with %s (stands in for %s)' % (
+            land['name'], land['max'][0] - land['min'][0] + 1, land['max'][1] - land['min'][1] + 1,
+            land['material'].rsplit('/', 1)[1], (land['game_material'] or 'none').rsplit('/', 1)[-1]))
     write_atmosphere(sc)
     print('[2/2] Rebuilding it as %s in the editor' % level)
     result = editor_script(args, 'import_map.py', {'scene': sc, 'level': level}, 'mapkit_import.log')
@@ -425,19 +483,26 @@ def build_maps(args):
     game = args.game or build.find_game()
     paks = pakfile.game_paks(game)
     textures = os.path.join(build.OUT, build.PAK_NAME)
-    checker = verify.Checker(([pakfile.Pak(textures)] if os.path.exists(textures) else []) + paks,
+    # The kit's own assets (terrain materials and anything you make under /Game/SalvageOps) ship in the pak.
+    own = verify.CookedFolder(cooked, 'SalvageOps')
+    checker = verify.Checker([own] + ([pakfile.Pak(textures)] if os.path.exists(textures) else []) + paks,
                              os.path.join(game, 'LemnisGate', 'Binaries', 'Win64', 'LemnisGate-Win64-Shipping.exe'))
     bad = False
-    for l in levels:
-        base = os.path.join(cooked, 'LemnisGate', 'Content', l[:-5].replace('/', os.sep))
-        problems = checker.check(base + '.umap', base + '.uexp')
-        print('  %s: %s' % (l[:-5], 'ok' if not problems else '%d problems' % len(problems)))
+    to_check = [l[:-5] + '.umap' for l in levels]
+    to_check += [f[len('LemnisGate/Content/'):] for f in own.files if f.endswith('.uasset')]
+    for rel in to_check:
+        base = os.path.join(cooked, 'LemnisGate', 'Content', os.path.splitext(rel)[0].replace('/', os.sep))
+        problems = checker.check(base + os.path.splitext(rel)[1], base + '.uexp')
+        if problems or rel.endswith('.umap'):
+            print('  %s: %s' % (os.path.splitext(rel)[0], 'ok' if not problems else '%d problems' % len(problems)))
         for p in problems:
             print('    ' + p)
         bad = bad or bool(problems)
+    if own.files:
+        print('  %d of the kit\'s own files (terrain materials and textures)' % len(own.files))
     if bad and not args.force:
         sys.exit('Not packed: those references would be missing in-game (pass --force to pack anyway).')
-    print('[3/3] Packing the map files only (the game supplies everything they reference)')
+    print('[3/3] Packing the maps and the kit\'s own assets (the game supplies everything else)')
     resp = os.path.join(build.BUILD, 'mapkit_pak_files.txt')
     listed = game_instance(paks)
     with open(resp, 'w') as f:
@@ -454,6 +519,8 @@ def build_maps(args):
                 sys.exit('Cook did not produce %s - see %s' % (l, os.path.join(LOGS, 'mapkit_cook.log')))
             for src in files:
                 f.write('"%s" "../../../LemnisGate/Content/%s"\n' % (src, l[:-5] + os.path.splitext(src)[1]))
+        for name, src in sorted(own.files.items()):
+            f.write('"%s" "../../../%s"\n' % (src, name))
     os.makedirs(build.OUT, exist_ok=True)
     pak = os.path.join(build.OUT, PAK_NAME)
     run([unrealpak, pak, '-create=' + resp], 'mapkit_pak.log')
@@ -469,7 +536,7 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'meshes', 'library', 'import', 'new', 'mode', 'list', 'build'])
+    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
@@ -484,7 +551,7 @@ def main():
     args = ap.parse_args()
     if args.command in ('import', 'new', 'mode') and not args.map:
         ap.error('%s needs a map name' % args.command)
-    {'setup': setup, 'meshes': import_meshes, 'library': make_library, 'import': import_map, 'new': new_map,
+    {'setup': setup, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
      'mode': set_mode, 'list': list_maps, 'build': build_maps}[args.command](args)
 
 

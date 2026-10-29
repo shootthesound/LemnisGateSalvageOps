@@ -9,7 +9,7 @@ public class LemnisGate : ModuleRules
 		if (Target.bBuildEditor)
 		{
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "Kismet", "BlueprintGraph", "AssetRegistry",
-				"MeshDescription", "StaticMeshDescription" });
+				"MeshDescription", "StaticMeshDescription", "Landscape" });
 		}
 	}
 }

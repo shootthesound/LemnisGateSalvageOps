@@ -13,8 +13,8 @@ from mapgeo import Reader  # noqa: E402
 SKIP = {'LevelScriptActor', 'LevelSequenceActor', 'CineCameraActor', 'CameraActor', 'Brush', 'DefaultPhysicsVolume',
         'LandscapeGizmoActiveActor', 'GameplayDebuggerPlayerManager', 'AbstractNavData', 'NavigationData',
         'ParticleEventManager'} | {'Landscape', 'LandscapeStreamingProxy', 'InstancedFoliageActor'}
-# Not rebuilt yet (terrain and foliage): import_map warns when a map has them.
-UNSUPPORTED = ('Landscape', 'LandscapeStreamingProxy', 'InstancedFoliageActor')
+# Rebuilt separately (terrain.py) or not yet (foliage): import_map warns about the latter.
+UNSUPPORTED = ('InstancedFoliageActor',)
 TRANSFORM = ('RelativeLocation', 'RelativeRotation', 'RelativeScale3D')
 
 

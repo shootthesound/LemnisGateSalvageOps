@@ -8,6 +8,7 @@
 
 class AActor;
 class AVolume;
+class UMaterialInterface;
 class UBlueprint;
 class UWorld;
 
@@ -65,6 +66,12 @@ public:
 	// Material slots get the game's materials where the kit has them (placeholders otherwise).
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static bool ImportMesh(const FString& PackagePath, const FString& File);
+
+	// Create a Landscape from a raw heightmap file (uint16 per vertex, row-major, 32768 = zero) covering vertices
+	// Min..Max (inclusive), placed with Transform and drawn with Material. Returns the landscape.
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static AActor* ImportLandscape(UWorld* World, const FString& HeightsFile, FIntPoint Min, FIntPoint Max,
+		int32 NumSubsections, int32 SubsectionSizeQuads, FTransform Transform, UMaterialInterface* Material, FName Name);
 
 	// Give a volume (KillZ, blocking, ...) a box brush of the given size in cm.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")

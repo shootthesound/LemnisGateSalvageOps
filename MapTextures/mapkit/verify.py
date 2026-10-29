@@ -9,6 +9,21 @@ import mapgeo  # noqa: E402
 import pakfile  # noqa: E402
 
 
+class CookedFolder:
+    """Cooked files under Content/<sub> of a cook output, readable like a pak (the kit's own assets)."""
+
+    def __init__(self, cooked, sub):
+        self.files = {}
+        base = os.path.join(cooked, 'LemnisGate', 'Content')
+        for root, _, names in os.walk(os.path.join(base, sub)):
+            for n in names:
+                full = os.path.join(root, n)
+                self.files['LemnisGate/Content/' + os.path.relpath(full, base).replace(os.sep, '/')] = full
+
+    def read(self, name):
+        return open(self.files[name], 'rb').read()
+
+
 class Checker:
     def __init__(self, paks, exe_path):
         self.paks = paks

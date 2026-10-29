@@ -9,6 +9,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Serialization/MemoryReader.h"
 #include "StaticMeshAttributes.h"
+#include "Landscape.h"
+#include "LandscapeInfo.h"
 #include "BSPOps.h"
 #include "Components/BrushComponent.h"
 #include "Engine/Polys.h"
@@ -423,6 +425,50 @@ bool UMapKitLibrary::ImportMesh(const FString& PackagePath, const FString& File)
 	return UPackage::SavePackage(Package, Mesh, RF_Public | RF_Standalone, *Filename, GError, nullptr, false, true, SAVE_NoError);
 #else
 	return false;
+#endif
+}
+
+AActor* UMapKitLibrary::ImportLandscape(UWorld* World, const FString& HeightsFile, FIntPoint Min, FIntPoint Max,
+	int32 NumSubsections, int32 SubsectionSizeQuads, FTransform Transform, UMaterialInterface* Material, FName Name)
+{
+#if WITH_EDITOR
+	TArray<uint8> Bytes;
+	const int32 Count = (Max.X - Min.X + 1) * (Max.Y - Min.Y + 1);
+	if (!World || !FFileHelper::LoadFileToArray(Bytes, *HeightsFile) || Bytes.Num() != Count * 2)
+	{
+		return nullptr;
+	}
+	TArray<uint16> Heights;
+	Heights.SetNumUninitialized(Count);
+	FMemory::Memcpy(Heights.GetData(), Bytes.GetData(), Bytes.Num());
+	TMap<FGuid, TArray<uint16>> HeightData;
+	HeightData.Add(FGuid(), MoveTemp(Heights));
+	TMap<FGuid, TArray<FLandscapeImportLayerInfo>> LayerData;
+	LayerData.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
+
+	FActorSpawnParameters Params;
+	Params.Name = Name.IsNone() ? NAME_None : MakeUniqueObjectName(World->PersistentLevel, ALandscape::StaticClass(), Name);
+	ALandscape* Landscape = World->SpawnActor<ALandscape>(Transform.GetLocation(), Transform.Rotator(), Params);
+	if (!Landscape)
+	{
+		return nullptr;
+	}
+	Landscape->bCanHaveLayersContent = false;  // plain heightmap, like the game's
+	Landscape->LandscapeMaterial = Material;
+	Landscape->SetActorRelativeScale3D(Transform.GetScale3D());
+	Landscape->Import(FGuid::NewGuid(), Min.X, Min.Y, Max.X, Max.Y, NumSubsections, SubsectionSizeQuads, HeightData,
+		nullptr, LayerData, ELandscapeImportAlphamapType::Additive);
+	if (ULandscapeInfo* Info = Landscape->GetLandscapeInfo())
+	{
+		Info->UpdateLayerInfoMap(Landscape);
+	}
+	if (!Name.IsNone())
+	{
+		Landscape->SetActorLabel(Name.ToString());
+	}
+	return Landscape;
+#else
+	return nullptr;
 #endif
 }
 
