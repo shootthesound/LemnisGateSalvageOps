@@ -91,6 +91,7 @@ void AMapBuilderController::PlayerTick(float DeltaTime)
 	{
 		// The right stick picks an option; flying still works.
 		const FVector2D S(Stick(EKeys::Gamepad_RightX), Stick(EKeys::Gamepad_RightY));
+		RadialStick = S;
 		if (S.Size() > 0.5f)
 		{
 			// Option 0 at the top, going clockwise.

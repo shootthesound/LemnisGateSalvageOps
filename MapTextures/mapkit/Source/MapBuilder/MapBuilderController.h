@@ -53,6 +53,8 @@ public:
 	const FString& GetRadialTitle() const { return RadialTitle; }
 	const TArray<FMapBuilderRadialItem>& GetRadialItems() const { return RadialItems; }
 	int32 GetRadialChoice() const { return RadialChoice; }
+	bool IsRadialSticky() const { return bRadialSticky; }
+	FVector2D GetRadialStick() const { return RadialStick; }  // right stick, up = +Y
 
 	bool Save();
 
@@ -148,7 +150,8 @@ private:
 	FString RadialTitle;
 	TArray<FMapBuilderRadialItem> RadialItems;
 	int32 RadialChoice = -1;
-	bool bRadialSticky = false;  // stays open after its button is released: A chooses, B backs out
+	bool bRadialSticky = false;
+	FVector2D RadialStick = FVector2D::ZeroVector;  // stays open after its button is released: A chooses, B backs out
 
 	FString Status;
 	double StatusTime = 0.0;
