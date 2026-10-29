@@ -1,0 +1,6 @@
+Grey2
+Replaces: /Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Grey2
+Used in 19 prototype maps. Also on glass wall frames in the Training Center.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

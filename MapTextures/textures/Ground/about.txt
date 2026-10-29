@@ -1,0 +1,6 @@
+Ground
+Replaces: /Game/Environment/01_Light_And_Dark/Ground/M_Black_Ground
+Used in 67 prototype maps. Prototype maps only.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

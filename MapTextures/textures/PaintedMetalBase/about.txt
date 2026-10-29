@@ -1,0 +1,7 @@
+PaintedMetalBase
+Replaces: /Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal
+Used in 53 prototype maps. Parent of about 20 painted-metal materials across shipped maps. Each keeps its own colour but gets this texture.
+Affects shipped maps: needs --allow-shared.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

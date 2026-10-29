@@ -1,0 +1,7 @@
+DarkGrey
+Replaces: /Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_DarkGrey
+Used in 13 prototype maps. Used by hangar ceilings, containers and other props across shipped maps.
+Affects shipped maps: needs --allow-shared.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

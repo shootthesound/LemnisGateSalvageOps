@@ -1,0 +1,7 @@
+White
+Replaces: /Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Whites
+Used in 78 prototype maps. Main wall colour of almost every prototype map, but also used on wall panels in every shipped map.
+Affects shipped maps: needs --allow-shared.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

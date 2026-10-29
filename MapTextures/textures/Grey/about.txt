@@ -1,0 +1,6 @@
+Grey
+Replaces: /Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Grey
+Used in 30 prototype maps. Also on a ceiling light fitting in Chimera and Iridium Plains.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

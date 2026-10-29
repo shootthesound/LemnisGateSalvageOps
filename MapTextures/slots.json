@@ -1,0 +1,132 @@
+{
+  "parent_material": "/Game/SalvageOps/M_SalvageTriplanar",
+  "defaults": {
+    "tile_size": 200.0,
+    "blend_sharpness": 4.0,
+    "tint_strength": 1.0,
+    "normal_strength": 1.0
+  },
+  "slots": {
+    "White": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Whites",
+      "kind": "instance", "color": [0.5312, 0.5285, 0.487], "roughness": 0.2, "metallic": 0.0,
+      "proto_maps": 78, "shared": true,
+      "note": "Main wall colour of almost every prototype map, but also used on wall panels in every shipped map."
+    },
+    "SolidGray": {
+      "asset": "/Game/ThirdParty/StarterBundle/ModularSci_Comm/Materials/MI_Solid_Gray",
+      "kind": "instance", "color": [0.705, 0.705, 0.705], "roughness": 0.4, "metallic": 0.7,
+      "proto_maps": 69, "shared": false,
+      "note": "Also on one ceiling ring in the main menu scene."
+    },
+    "Ground": {
+      "asset": "/Game/Environment/01_Light_And_Dark/Ground/M_Black_Ground",
+      "kind": "material", "color": [0.03, 0.03, 0.03], "roughness": 0.6, "metallic": 0.0,
+      "proto_maps": 67, "shared": false,
+      "note": "Prototype maps only."
+    },
+    "Orange": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Orange",
+      "kind": "instance", "color": [0.4688, 0.1542, 0.0], "roughness": 0.2, "metallic": 0.0,
+      "proto_maps": 53, "shared": false,
+      "note": "Also the default material of lockers, the chessboard prop and small tile panels in some shipped maps."
+    },
+    "Green": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Clean_Green",
+      "kind": "instance", "color": [0.2649, 0.4375, 0.0401], "roughness": 0.4, "metallic": 0.0,
+      "proto_maps": 53, "shared": false,
+      "note": "Prototype maps only."
+    },
+    "Red": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_MatteRed",
+      "kind": "instance", "color": [0.0762, 0.0075, 0.0022], "roughness": 0.5, "metallic": 0.0,
+      "proto_maps": 53, "shared": false,
+      "note": "Also appears in the main menu scene."
+    },
+    "Yellow": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Yellow",
+      "kind": "instance", "color": [0.1927, 0.1193, 0.0141], "roughness": 0.35, "metallic": 0.0,
+      "proto_maps": 49, "shared": false,
+      "note": "Prototype maps only."
+    },
+    "BaseGray": {
+      "asset": "/Game/ThirdParty/StarterBundle/ModularScifiProps/Materials/MI_Base_Gray",
+      "kind": "instance", "color": [0.46, 0.46, 0.46], "roughness": 0.225, "metallic": 0.9,
+      "proto_maps": 39, "shared": false,
+      "note": "Prototype maps only."
+    },
+    "Black": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Black",
+      "kind": "instance", "color": [0.03, 0.03, 0.03], "roughness": 0.3524, "metallic": 0.0,
+      "proto_maps": 36, "shared": false,
+      "note": "Also on one target in the Training Center."
+    },
+    "Grey": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Grey",
+      "kind": "instance", "color": [0.0762, 0.0723, 0.0685], "roughness": 0.35, "metallic": 0.0,
+      "proto_maps": 30, "shared": false,
+      "note": "Also on a ceiling light fitting in Chimera and Iridium Plains."
+    },
+    "SolidDarkGray": {
+      "asset": "/Game/ThirdParty/StarterBundle/ModularSci_Comm/Materials/MI_Solid_DarkGray",
+      "kind": "instance", "color": [0.13, 0.13, 0.13], "roughness": 0.35, "metallic": 0.5,
+      "proto_maps": 19, "shared": false,
+      "note": "Also on ceiling rings in the main menu scene and the tutorial."
+    },
+    "Grey2": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Grey2",
+      "kind": "instance", "color": [0.0382, 0.0343, 0.0319], "roughness": 0.35, "metallic": 0.0,
+      "proto_maps": 19, "shared": false,
+      "note": "Also on glass wall frames in the Training Center."
+    },
+    "DarkGrey": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_DarkGrey",
+      "kind": "instance", "color": [0.0751, 0.077, 0.0833], "roughness": 0.5, "metallic": 0.0,
+      "proto_maps": 13, "shared": true,
+      "note": "Used by hangar ceilings, containers and other props across shipped maps."
+    },
+    "PaintedMetalBase": {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal",
+      "kind": "material", "color": [0.5, 0.5, 0.5], "roughness": 0.4, "metallic": 0.0,
+      "proto_maps": 53, "shared": true,
+      "note": "Parent of about 20 painted-metal materials across shipped maps. Each keeps its own colour but gets this texture."
+    }
+  },
+  "passthroughs": [
+    {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Whites",
+      "when_slot": "Orange", "unless_slot": "White",
+      "parent": "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal",
+      "scalars": {"Roughness": 0.2, "Dust_Level_Top_Side": 0.0, "Wear_Blur": 0.0, "Wear_Placement": 1.0, "Wear_Width": 4.0, "Param": 0.7617},
+      "vectors": {"Color": [0.5312, 0.5285, 0.487, 1.0]}
+    },
+    {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Metal_Red",
+      "when_slot": "Orange",
+      "parent": "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal",
+      "scalars": {"Roughness": 0.2, "Dust_Level_Top_Side": 0.0, "Wear_Blur": 0.0, "Wear_Placement": 0.1619, "Wear_Width": 1.7467, "Param": 0.7617},
+      "vectors": {"Color": [0.1384, 0.0685, 0.0513, 1.0]}
+    },
+    {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_Red",
+      "when_slot": "Orange",
+      "parent": "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal",
+      "scalars": {"Roughness": 0.2, "Dust_Level_Top_Side": 0.0, "Wear_Blur": 0.0, "Wear_Placement": 0.1619, "Wear_Width": 1.7467, "Param": 0.7617},
+      "vectors": {"Color": [0.3281, 0.0891, 0.0398, 1.0]}
+    },
+    {
+      "asset": "/Game/ThirdParty/SciFiModularEnvironment/Materials/MI_Painted_RoughMetal_DarkGrey_Inst",
+      "when_slot": "DarkGrey",
+      "parent": "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal",
+      "scalars": {"Roughness": 0.6, "U": 1.0, "V": 1.0, "Wear_Placement": 0.1619, "Wear_Width": 1.7333, "Dust_Level_Top_Side": 0.2, "Wear_Blur": 0.0},
+      "vectors": {"Color": [0.2292, 0.2002, 0.1253, 1.0]}
+    }
+  ],
+  "stubs": {
+    "/Game/ThirdParty/SciFiModularEnvironment/Materials/M_Painted_Metal": {
+      "unless_slot": "PaintedMetalBase",
+      "scalars": ["Dust_Level_Top_Side", "Param", "Roughness", "U", "V", "Wear_Blur", "Wear_Placement", "Wear_Width"],
+      "vectors": ["Color"]
+    }
+  }
+}

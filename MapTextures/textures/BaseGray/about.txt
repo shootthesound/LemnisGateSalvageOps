@@ -1,0 +1,6 @@
+BaseGray
+Replaces: /Game/ThirdParty/StarterBundle/ModularScifiProps/Materials/MI_Base_Gray
+Used in 39 prototype maps. Prototype maps only.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}

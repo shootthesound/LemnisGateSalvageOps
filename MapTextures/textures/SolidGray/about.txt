@@ -1,0 +1,6 @@
+SolidGray
+Replaces: /Game/ThirdParty/StarterBundle/ModularSci_Comm/Materials/MI_Solid_Gray
+Used in 69 prototype maps. Also on one ceiling ring in the main menu scene.
+
+Put albedo.png here (optionally normal.png and orm.png).
+Optional settings.json, e.g. {"tile_size": 300, "tint_strength": 0.5}
