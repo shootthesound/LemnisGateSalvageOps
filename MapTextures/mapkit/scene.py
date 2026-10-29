@@ -182,14 +182,20 @@ class Scene:
     def component_refs(self, i, props):
         """Actor variables pointing at the actor's own components ({name: (component, class path)}), e.g. the jump
         pad's Centre -> Jump_Pad_Centre. The game's code uses them and they are only set in the saved level, so a
-        level without them crashes the game."""
+        level without them crashes the game. Arrays of them (a destroyable objective's ChunksArray) come back as
+        ('A,B,C', 'array:' + class path)."""
         out = {}
         for k, (_, v) in props.items():
-            if k in ('RootComponent', 'BlueprintCreatedComponents') or not (isinstance(v, dict) and 'export' in v):
+            if k in ('RootComponent', 'BlueprintCreatedComponents', 'InstanceComponents'):
                 continue
-            c = self.pkg.exports[v['export'] - 1]
-            if c['outer'] == i:
-                out[k] = (c['name'], self.class_path(c))
+            if isinstance(v, dict) and 'export' in v:
+                c = self.pkg.exports[v['export'] - 1]
+                if c['outer'] == i:
+                    out[k] = (c['name'], self.class_path(c))
+            elif isinstance(v, list) and v and all(isinstance(x, dict) and 'export' in x for x in v):
+                comps = [self.pkg.exports[x['export'] - 1] for x in v]
+                if all(c['outer'] == i for c in comps):
+                    out[k] = (','.join(c['name'] for c in comps), 'array:' + (self.class_path(comps[0]) or ''))
         return out
 
     def construction_values(self, j):
@@ -275,7 +281,8 @@ class Scene:
                      'component_refs': {k: name for k, (name, _) in self.component_refs(i, props).items()}}
             root = props.get('RootComponent', (None, None))[1]
             for k, (t, v) in props.items():
-                if not (isinstance(v, dict) and 'export' in v) and k not in ('BlueprintCreatedComponents',):
+                exports = isinstance(v, list) and any(isinstance(x, dict) and 'export' in x for x in v)
+                if not (isinstance(v, dict) and 'export' in v) and not exports and k not in ('BlueprintCreatedComponents',):
                     actor['props'][k] = (t, v)
             for prop, functions in self.events(i, i).items():
                 actor.setdefault('events', {})[prop] = ','.join(functions)

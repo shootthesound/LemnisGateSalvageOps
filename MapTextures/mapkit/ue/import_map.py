@@ -121,21 +121,36 @@ def spawn(world, a):
     return actor
 
 
+def snap_near(actor, start, rings=8, step=200.0):
+    """Put `actor` on the floor at `start`, or the nearest floor in rings of 8 directions around it."""
+    import math
+    for ring in range(rings + 1):
+        for k in range(8 if ring else 1):
+            angle = math.radians(45 * k)
+            offset = unreal.Vector(math.cos(angle) * ring * step, math.sin(angle) * ring * step, 0)
+            actor.set_actor_location(start + offset, False, False)
+            if LIB.snap_to_ground(actor, 300.0, 400.0):
+                return True
+    return False
+
+
 def main():
     scene, level = JOB['scene'], JOB['level']
     actors = scene['actors']
     made = placeholders(actors)
     log('%d placeholders' % len(made))
     world = LIB.create_level(level)
-    spawned, failed = 0, {}
+    spawned, failed, snap = 0, {}, []
     for a in actors:
         if a['class'] in WORLD_SETTINGS:
             if a['class'].endswith('ConvergenceWorldSettings'):
                 apply_props(world.get_world_settings(), a['props'])
             continue
         try:
-            spawn(world, a)
+            actor = spawn(world, a)
             spawned += 1
+            if a.get('snap'):
+                snap.append(actor)
         except Exception as e:
             failed[a['name']] = str(e)
             log('FAILED %s (%s): %s' % (a['name'], a['class'], e))
@@ -161,6 +176,14 @@ def main():
         else:
             failed[name] = 'foliage failed'
             log('FAILED foliage %s' % name)
+    # Objectives a mode conversion placed: onto the ground, now that everything is there to stand on.
+    for actor in snap:
+        # Only ground near the expected height: a gap in the floor would otherwise drop it to whatever is far below.
+        # Where there's a gap, use the nearest floor around it.
+        start = actor.get_actor_location()
+        if not snap_near(actor, start):
+            actor.set_actor_location(start, False, False)
+            log('  no floor near %s: left at floor height, move it in the editor' % actor.get_actor_label())
     if not LIB.save_level(world):
         raise RuntimeError('could not save ' + level)
     return {'spawned': spawned, 'failed': failed, 'placeholders': made,

@@ -15,6 +15,26 @@ void AMapKitActor::OnConstruction(const FTransform& Transform)
 	GetComponents(Components);
 	for (const TPair<FName, FName>& Link : ComponentLinks)
 	{
+		// An array of components ("Chunk1,Chunk2,..."), e.g. a destroyable objective's ChunksArray.
+		if (FArrayProperty* Array = FindFProperty<FArrayProperty>(GetClass(), Link.Key))
+		{
+			FObjectPropertyBase* Inner = CastField<FObjectPropertyBase>(Array->Inner);
+			if (!Inner)
+			{
+				continue;
+			}
+			TArray<FString> Names;
+			Link.Value.ToString().ParseIntoArray(Names, TEXT(","));
+			FScriptArrayHelper Helper(Array, Array->ContainerPtrToValuePtr<void>(this));
+			Helper.EmptyValues();
+			for (const FString& Name : Names)
+			{
+				UActorComponent* const* Found = Components.FindByPredicate([&](UActorComponent* C) { return C->GetName() == Name; });
+				const int32 Index = Helper.AddValue();
+				Inner->SetObjectPropertyValue(Helper.GetRawPtr(Index), Found && (*Found)->IsA(Inner->PropertyClass) ? *Found : nullptr);
+			}
+			continue;
+		}
 		FObjectPropertyBase* Property = FindFProperty<FObjectPropertyBase>(GetClass(), Link.Key);
 		UActorComponent* const* Found = Components.FindByPredicate([&](UActorComponent* C) { return C->GetFName() == Link.Value; });
 		if (Property && Found && (*Found)->IsA(Property->PropertyClass))

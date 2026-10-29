@@ -35,8 +35,14 @@ map list, not its name.
 
 1. **Start from a map.** Use one of these:
    - **A new map of your own:** `python mapkit/kit.py new SO_Yard --from CAP_Box --title "CAP_SalvageYard (Custom)"`.
-     - It's added to the P2P map list under that title. Add `--mode CTF` (or another mode) to play it in a different
-       mode from the map you started from.
+     - It's added to the P2P map list under that title.
+     - Add `--mode CAP` (or CTF, DM, DST, EVA, ASN) to convert it to another mode:
+       - The map's objectives are replaced with that mode's, placed relative to the two gate pods the way that mode's
+         `*_Box` map has them.
+       - The pods become the right kind for the mode.
+       - Objectives are dropped onto the nearest floor.
+       - For example, `new SO_ArchesCap --from CTF_Arches --mode CAP` gives Arches with three capture points. Move them
+         in the editor if you want them elsewhere.
      - The game's `*_Box` maps are the simplest working setup for each mode.
      - The game only offers maps it registered when it was built. New maps are therefore saved in one of 20 slots: the
        game's registered maps that its menu never lists (ASN_Bases, CAP_Box, EV_Urban and others). This gives you up
@@ -45,8 +51,9 @@ map list, not its name.
    - **Replace a listed map with another layout:** `python mapkit/kit.py import CAP_Box --as CAP_Crescent`.
    - **Keep only the gameplay:** add `--gameplay-only` to `new` or `import` to keep a map's objectives, spawns, lights
      and sky, without its geometry.
-   - **Change a map's mode:** `python mapkit/kit.py mode CTF_Fork CAP` plays a map (yours or the game's) in another
-     mode. Its objectives need to suit the mode: capture points for CAP, flags and gate pods for CTF.
+   - **Change only the mode in the list:** `python mapkit/kit.py mode CTF_Fork CAP` plays a map (yours or the game's)
+     in another mode without touching its objectives, so use it on maps whose objectives already suit the mode. To
+     convert the objectives as well, use `new --mode`.
    - **See your maps:** `python mapkit/kit.py list`. They're stored in `_build/MapKit/maps.json`.
    - **Delete one of your maps:** `python mapkit/kit.py remove SO_Yard`. This frees its slot.
 2. **Edit.**

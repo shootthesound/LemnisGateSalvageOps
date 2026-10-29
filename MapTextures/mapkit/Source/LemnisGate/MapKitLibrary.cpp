@@ -123,6 +123,11 @@ bool UMapKitLibrary::AddVariable(UBlueprint* Blueprint, FName Name, FName Type)
 {
 #if WITH_EDITOR
 	FEdGraphPinType PinType;
+	if (Type.ToString().StartsWith(TEXT("array:")))
+	{
+		PinType.ContainerType = EPinContainerType::Array;
+		Type = FName(*Type.ToString().Mid(6));
+	}
 	if (Type == TEXT("float"))
 	{
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Float;
@@ -581,6 +586,24 @@ AActor* UMapKitLibrary::SpawnInstancedMesh(UWorld* World, FName Name, UStaticMes
 	Actor->SetFolderPath(TEXT("Foliage"));
 #endif
 	return Actor;
+}
+
+bool UMapKitLibrary::SnapToGround(AActor* Actor, float Up, float Down)
+{
+	UWorld* World = Actor ? Actor->GetWorld() : nullptr;
+	if (!World)
+	{
+		return false;
+	}
+	const FVector Location = Actor->GetActorLocation();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(MapKitSnap), true, Actor);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Location + FVector(0, 0, Up), Location - FVector(0, 0, Down), ECC_WorldStatic, Params))
+	{
+		return false;
+	}
+	Actor->SetActorLocation(Hit.ImpactPoint);
+	return true;
 }
 
 void UMapKitLibrary::MakeBoxBrush(AVolume* Volume, FVector Size)

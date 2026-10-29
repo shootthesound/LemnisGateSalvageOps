@@ -38,6 +38,7 @@ import mapgeo  # noqa: E402
 import maplist  # noqa: E402
 import foliage  # noqa: E402
 import meshes  # noqa: E402
+import modes  # noqa: E402
 import terrain  # noqa: E402
 import scene  # noqa: E402
 import verify  # noqa: E402
@@ -111,8 +112,8 @@ def blueprint_catalog(paks):
                     if ptype in VARIABLE_TYPES:
                         found[name] = VARIABLE_TYPES[ptype]
                 for name, (component, cls) in sc.component_refs(i, props).items():
-                    if cls:
-                        found[name] = 'object:' + cls
+                    if cls and cls != 'array:':
+                        found[name] = 'array:object:' + cls[6:] if cls.startswith('array:') else 'object:' + cls
                         links.setdefault(bp_classes[e['class']], {})[name] = component
                 for prop, functions in sc.events(i, i).items():
                     events.setdefault(bp_classes[e['class']], {})[prop] = ','.join(functions)
@@ -345,7 +346,7 @@ def pin_template_values(sc):
                     a.setdefault('component_values', {}).setdefault('%s.%s' % (n['name'], prop), value)
 
 
-def rebuild(args, paks, umap, level):
+def rebuild(args, paks, umap, level, convert_to=None):
     existing = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '.umap')
     if os.path.exists(existing):
         os.remove(existing)
@@ -354,6 +355,15 @@ def rebuild(args, paks, umap, level):
     sc['landscapes'] = [] if args.gameplay_only or args.no_terrain else landscape_jobs(paks, umap)
     sc['foliage'] = [] if args.gameplay_only or args.no_foliage else foliage_jobs(paks, umap)
     pin_template_values(sc)
+    if convert_to:
+        box = scene.export(paks, map_path(paks, modes.BOX[convert_to]))
+        pin_template_values(box)
+        try:
+            n = modes.convert(sc, box, convert_to)
+        except ValueError as e:
+            sys.exit('Cannot convert to %s: %s' % (convert_to, e))
+        print('  converted to %s: %d objectives placed as in %s, gate pods kept' % (
+            convert_to, n, modes.BOX[convert_to]))
     if args.gameplay_only:
         sc['actors'] = [a for a in sc['actors'] if a['class'] not in GEOMETRY]
     print('  %d actors' % len(sc['actors']))
@@ -444,7 +454,9 @@ def new_map(args):
                              'mode': mode_name(args.mode) if args.mode else ml.entry(template)['mode'],
                              'template': args.source, 'slot': slot}
     save_registry(reg)
-    rebuild(args, paks, source, slot)
+    source_mode = ml.entry(template)['mode']
+    mode = reg['maps'][args.map]['mode']
+    rebuild(args, paks, source, slot, convert_to=mode if mode != source_mode else None)
     m = reg['maps'][args.map]
     print('%s: "%s", %s, saved as %s. Build to add it to the game\'s map list.' % (
         args.map, m['title'], m['mode'], slot))

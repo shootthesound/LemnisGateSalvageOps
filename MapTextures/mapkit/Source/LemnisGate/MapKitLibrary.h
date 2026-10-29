@@ -86,6 +86,10 @@ public:
 	static AActor* SpawnInstancedMesh(UWorld* World, FName Name, UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials,
 		const FString& File, FVector Location, int32 CullStart, int32 CullEnd, FName CollisionProfile);
 
+	// Drop an actor onto whatever is below it (traced from Up cm above down to Down cm below). False if nothing is.
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static bool SnapToGround(AActor* Actor, float Up = 300.f, float Down = 5000.f);
+
 	// Give a volume (KillZ, blocking, ...) a box brush of the given size in cm.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static void MakeBoxBrush(AVolume* Volume, FVector Size);
