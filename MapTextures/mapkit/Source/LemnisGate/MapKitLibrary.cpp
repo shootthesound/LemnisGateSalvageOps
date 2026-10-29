@@ -1,5 +1,8 @@
 #include "MapKitLibrary.h"
 
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+
 #if WITH_EDITOR
 #include "AssetRegistryModule.h"
 #include "Atmosphere/AtmosphericFogComponent.h"
@@ -132,6 +135,24 @@ bool UMapKitLibrary::AddVariable(UBlueprint* Blueprint, FName Name, FName Type)
 	{
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
 	}
+	else if (Type == TEXT("name"))
+	{
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Name;
+	}
+	else if (Type.ToString().StartsWith(TEXT("struct:")))
+	{
+		const FString Struct = Type.ToString().Mid(7);
+		UScriptStruct* Found = Struct == TEXT("LinearColor") ? TBaseStructure<FLinearColor>::Get()
+			: Struct == TEXT("Color") ? TBaseStructure<FColor>::Get()
+			: Struct == TEXT("Vector") ? TBaseStructure<FVector>::Get()
+			: Struct == TEXT("Rotator") ? TBaseStructure<FRotator>::Get() : nullptr;
+		if (!Found)
+		{
+			return false;
+		}
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+		PinType.PinSubCategoryObject = Found;
+	}
 	else if (Type.ToString().StartsWith(TEXT("object:")))
 	{
 		UClass* Class = LoadObject<UClass>(nullptr, *Type.ToString().Mid(7));
@@ -191,6 +212,45 @@ bool UMapKitLibrary::Compile(UBlueprint* Blueprint)
 #else
 	return false;
 #endif
+}
+
+int32 UMapKitLibrary::RenameTemplates(UBlueprint* Blueprint, const TMap<FName, FName>& Names)
+{
+	int32 Renamed = 0;
+#if WITH_EDITOR
+	USimpleConstructionScript* SCS = Blueprint ? Blueprint->SimpleConstructionScript : nullptr;
+	if (!SCS)
+	{
+		return 0;
+	}
+	TArray<USCS_Node*> Nodes = SCS->GetAllNodes();
+	if (USCS_Node* Default = SCS->GetDefaultSceneRootNode())
+	{
+		Nodes.AddUnique(Default);
+	}
+	for (USCS_Node* Node : Nodes)
+	{
+		const FName* Wanted = Names.Find(Node->GetVariableName());
+		UActorComponent* Template = Node->ComponentTemplate;
+		if (!Wanted || !Template || Template->GetFName() == *Wanted)
+		{
+			continue;
+		}
+		if (StaticFindObjectFast(nullptr, Template->GetOuter(), *Wanted))
+		{
+			continue;  // taken
+		}
+		if (Template->Rename(*Wanted->ToString(), nullptr, REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional))
+		{
+			++Renamed;
+		}
+	}
+	if (Renamed)
+	{
+		Blueprint->MarkPackageDirty();
+	}
+#endif
+	return Renamed;
 }
 
 UWorld* UMapKitLibrary::CreateLevel(const FString& PackagePath)
@@ -470,6 +530,57 @@ AActor* UMapKitLibrary::ImportLandscape(UWorld* World, const FString& HeightsFil
 #else
 	return nullptr;
 #endif
+}
+
+AActor* UMapKitLibrary::SpawnInstancedMesh(UWorld* World, FName Name, UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials,
+	const FString& File, FVector Location, int32 CullStart, int32 CullEnd, FName CollisionProfile)
+{
+	TArray<uint8> Bytes;
+	if (!World || !Mesh || !FFileHelper::LoadFileToArray(Bytes, *File) || Bytes.Num() % sizeof(FMatrix) != 0)
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters Params;
+	Params.Name = Name.IsNone() ? NAME_None : MakeUniqueObjectName(World->PersistentLevel, AActor::StaticClass(), Name);
+	AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(Location), Params);
+	if (!Actor)
+	{
+		return nullptr;
+	}
+	UHierarchicalInstancedStaticMeshComponent* Instances = NewObject<UHierarchicalInstancedStaticMeshComponent>(
+		Actor, TEXT("Instances"), RF_Transactional);
+	Instances->SetMobility(EComponentMobility::Static);
+	Instances->SetStaticMesh(Mesh);
+	for (int32 i = 0; i < Materials.Num(); ++i)
+	{
+		if (Materials[i])
+		{
+			Instances->SetMaterial(i, Materials[i]);
+		}
+	}
+	Instances->InstanceStartCullDistance = CullStart;
+	Instances->InstanceEndCullDistance = CullEnd;
+	Instances->SetCollisionProfileName(CollisionProfile);
+	Actor->SetRootComponent(Instances);
+	Actor->AddInstanceComponent(Instances);
+	Instances->SetWorldLocation(Location);
+	Instances->RegisterComponent();
+	const int32 Count = Bytes.Num() / sizeof(FMatrix);
+	for (int32 i = 0; i < Count; ++i)
+	{
+		FMatrix M;
+		FMemory::Memcpy(&M.M[0][0], Bytes.GetData() + i * sizeof(FMatrix), sizeof(FMatrix));
+		Instances->AddInstance(FTransform(M));
+	}
+	Instances->BuildTreeIfOutdated(false, true);
+#if WITH_EDITOR
+	if (!Name.IsNone())
+	{
+		Actor->SetActorLabel(Name.ToString());
+	}
+	Actor->SetFolderPath(TEXT("Foliage"));
+#endif
+	return Actor;
 }
 
 void UMapKitLibrary::MakeBoxBrush(AVolume* Volume, FVector Size)

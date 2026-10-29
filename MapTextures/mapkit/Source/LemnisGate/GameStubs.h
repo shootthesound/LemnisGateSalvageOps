@@ -178,7 +178,7 @@ public:
 };
 
 UCLASS(Blueprintable)
-class AConstructGameMode : public AConvergenceGameMode { GENERATED_BODY() };
+class AConstructGameMode : public AGameMode { GENERATED_BODY() };  // no state machine (TrainingGameMode has none)
 
 UCLASS(Blueprintable)
 class AConvergenceGameState : public AGameState { GENERATED_BODY() };

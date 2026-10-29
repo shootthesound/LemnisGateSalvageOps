@@ -74,7 +74,16 @@ def apply_component(comp, props):
         if mesh:
             comp.set_static_mesh(mesh)
     for i, m in enumerate(props.get('OverrideMaterials', (None, []))[1] or []):
-        if m:
+        if isinstance(m, dict) and 'dynamic' in m:
+            # A material instance the level keeps (e.g. the sky sphere's colours), saved with the level again.
+            mid = comp.create_dynamic_material_instance(i, load(m['dynamic']))
+            for name, value in m['scalars'].items():
+                mid.set_scalar_parameter_value(name, value)
+            for name, value in m['vectors'].items():
+                mid.set_vector_parameter_value(name, unreal.LinearColor(*value))
+            for name, value in m['textures'].items():
+                mid.set_texture_parameter_value(name, load(value))
+        elif m:
             comp.set_material(i, load(m))
 
 
@@ -141,6 +150,17 @@ def main():
         else:
             failed[land['name']] = 'terrain import failed'
             log('FAILED terrain %s' % land['name'])
+    for k, f in enumerate(scene.get('foliage', [])):
+        mesh = load(f['mesh'] + '.' + f['mesh'].rsplit('/', 1)[1])
+        materials = [load(m) if m else None for m in f['materials']]
+        name = 'Foliage_' + f['mesh'].rsplit('/', 1)[1]
+        actor = LIB.spawn_instanced_mesh(world, name, mesh, materials, f['file'], convert('Vector', f['location']),
+                                         f['cull'][0], f['cull'][1], f['collision'])
+        if actor:
+            spawned += 1
+        else:
+            failed[name] = 'foliage failed'
+            log('FAILED foliage %s' % name)
     if not LIB.save_level(world):
         raise RuntimeError('could not save ' + level)
     return {'spawned': spawned, 'failed': failed, 'placeholders': made,

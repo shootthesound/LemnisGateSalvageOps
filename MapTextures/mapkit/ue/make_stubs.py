@@ -115,6 +115,12 @@ def make(path, bp):
                 log('  %s: could not add variable %s (%s)' % (path, name, ptype))
     if not LIB.compile(blueprint):
         log('  %s: compiled with errors' % path)
+    names = {n['name']: n['template_name'] for n in bp['nodes']
+             if n.get('template_name') and n['template_name'] != n['name'] + '_GEN_VARIABLE'}
+    if bp.get('default_root_template') and bp['default_root_template'] != 'DefaultSceneRoot_GEN_VARIABLE':
+        names['DefaultSceneRoot'] = bp['default_root_template']
+    if names:
+        LIB.rename_templates(blueprint, {unreal.Name(k): unreal.Name(v) for k, v in names.items()})
     if bp.get('links') or bp.get('construction_values') or bp.get('events'):
         cdo = unreal.get_default_object(ASSETS.load_blueprint_class(path))
         if LIB.has_property(cdo.get_class(), 'ComponentLinks'):

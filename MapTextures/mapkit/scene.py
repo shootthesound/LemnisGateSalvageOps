@@ -13,8 +13,8 @@ from mapgeo import Reader  # noqa: E402
 SKIP = {'LevelScriptActor', 'LevelSequenceActor', 'CineCameraActor', 'CameraActor', 'Brush', 'DefaultPhysicsVolume',
         'LandscapeGizmoActiveActor', 'GameplayDebuggerPlayerManager', 'AbstractNavData', 'NavigationData',
         'ParticleEventManager'} | {'Landscape', 'LandscapeStreamingProxy', 'InstancedFoliageActor'}
-# Rebuilt separately (terrain.py) or not yet (foliage): import_map warns about the latter.
-UNSUPPORTED = ('InstancedFoliageActor',)
+# Rebuilt separately (terrain.py, foliage.py), not as actors.
+UNSUPPORTED = ()
 TRANSFORM = ('RelativeLocation', 'RelativeRotation', 'RelativeScale3D')
 
 
@@ -230,6 +230,35 @@ class Scene:
             r.o += size
         return out
 
+    def dynamic_material(self, j):
+        """A material instance saved inside the level (a construction script's MaterialInstanceDynamic, e.g. the sky
+        sphere's) as {'dynamic': parent, 'scalars', 'vectors', 'textures'}; None if it isn't one."""
+        pkg = self.pkg
+        e = pkg.exports[j - 1]
+        if e['class'] not in ('MaterialInstanceDynamic', 'MaterialInstanceConstant'):
+            return None
+        props = pkg.properties(e)
+        parent = props.get('Parent')
+        if not parent or parent[1] >= 0:
+            return None
+        out = {'dynamic': '%s.%s' % (pkg.import_path(parent[1]), pkg.imports[-parent[1] - 1]['name']),
+               'scalars': {}, 'vectors': {}, 'textures': {}}
+        for key, kind in (('ScalarParameterValues', 'scalars'), ('VectorParameterValues', 'vectors'),
+                          ('TextureParameterValues', 'textures')):
+            for p in props.get(key) or []:
+                name = (p.get('ParameterInfo') or {}).get('Name')
+                value = p.get('ParameterValue')
+                if not name or value is None:
+                    continue
+                if kind == 'textures':
+                    if not isinstance(value, tuple) or value[1] >= 0:
+                        continue
+                    value = '%s.%s' % (pkg.import_path(value[1]), pkg.imports[-value[1] - 1]['name'])
+                elif kind == 'vectors' and isinstance(value, dict):
+                    value = [value.get(c, 0.0) for c in 'RGBA']
+                out[kind][name] = value
+        return out
+
     def actors(self):
         pkg = self.pkg
         out = []
@@ -253,6 +282,11 @@ class Scene:
                 if c['outer'] == i and c['class'] != 'Model':
                     cprops = {k: (t, v) for k, (t, v) in self.tagged(j).items()
                               if not (isinstance(v, dict) and 'export' in v)}
+                    if 'OverrideMaterials' in cprops:
+                        t, mats = cprops['OverrideMaterials']
+                        cprops['OverrideMaterials'] = (t, [self.dynamic_material(m['export'])
+                                                           if isinstance(m, dict) and 'export' in m else m
+                                                           for m in mats])
                     actor['components'][c['name']] = {'class': c['class'], 'props': cprops}
                     if root and root.get('export') == j:
                         actor['root'] = c['name']

@@ -9,6 +9,7 @@
 class AActor;
 class AVolume;
 class UMaterialInterface;
+class UStaticMesh;
 class UBlueprint;
 class UWorld;
 
@@ -27,7 +28,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static UActorComponent* AddComponent(UBlueprint* Blueprint, UClass* ComponentClass, FName Name, FName Parent);
 
-	// Add an instance-editable variable. Type: float, int, bool or object:<class path>.
+	// Add an instance-editable variable. Type: float, int, bool, name, struct:<LinearColor|Color|Vector|Rotator> or
+	// object:<class path>.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static bool AddVariable(UBlueprint* Blueprint, FName Name, FName Type);
 
@@ -45,6 +47,11 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static bool Compile(UBlueprint* Blueprint);
+
+	// Give construction-script component templates the game's object names (component name -> template name;
+	// "DefaultSceneRoot" for the default root). Older Blueprints use names like StaticMeshComponent_12.
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static int32 RenameTemplates(UBlueprint* Blueprint, const TMap<FName, FName>& Names);
 
 	// Levels without an editor viewport (the editor's own NewLevel needs one, so it crashes in a commandlet).
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
@@ -72,6 +79,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "MapKit")
 	static AActor* ImportLandscape(UWorld* World, const FString& HeightsFile, FIntPoint Min, FIntPoint Max,
 		int32 NumSubsections, int32 SubsectionSizeQuads, FTransform Transform, UMaterialInterface* Material, FName Name);
+
+	// An actor drawing Mesh many times (foliage): a hierarchical instanced mesh with the instances in File (4x4 float
+	// matrices, row vectors, relative to the actor at Location).
+	UFUNCTION(BlueprintCallable, Category = "MapKit")
+	static AActor* SpawnInstancedMesh(UWorld* World, FName Name, UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials,
+		const FString& File, FVector Location, int32 CullStart, int32 CullEnd, FName CollisionProfile);
 
 	// Give a volume (KillZ, blocking, ...) a box brush of the given size in cm.
 	UFUNCTION(BlueprintCallable, Category = "MapKit")

@@ -14,6 +14,7 @@
     python mapkit/kit.py mode <Map> <Mode>  play a map (yours or the game's) in another mode: CTF, CAP, DM, DST,
                                             EVA or ASN
     python mapkit/kit.py list               your maps and mode changes
+    python mapkit/kit.py remove <Name>      delete one of your maps (frees its slot)
     python mapkit/kit.py build [--install]  cook the edited levels into SalvageOps_Maps_P.pak
 
 The project (_build/MapKit) holds stand-ins under the game's own asset paths. A cooked map only references them by
@@ -35,6 +36,7 @@ import pakfile  # noqa: E402
 import bpinfo  # noqa: E402
 import mapgeo  # noqa: E402
 import maplist  # noqa: E402
+import foliage  # noqa: E402
 import meshes  # noqa: E402
 import terrain  # noqa: E402
 import scene  # noqa: E402
@@ -133,7 +135,9 @@ def blueprint_catalog(paks):
     return cat
 
 
-VARIABLE_TYPES = {'FloatProperty': 'float', 'IntProperty': 'int', 'BoolProperty': 'bool'}
+VARIABLE_TYPES = {'FloatProperty': 'float', 'IntProperty': 'int', 'BoolProperty': 'bool', 'NameProperty': 'name',
+                  'LinearColor': 'struct:LinearColor', 'Color': 'struct:Color', 'Vector': 'struct:Vector',
+                  'Rotator': 'struct:Rotator'}
 
 
 def copy_materials():
@@ -314,19 +318,29 @@ def landscape_jobs(paks, umap):
     return jobs
 
 
+def foliage_jobs(paks, umap):
+    """The map's foliage as instance files plus mesh and settings, for import_map.py."""
+    jobs = []
+    for k, f in enumerate(foliage.foliage(scene.Scene(paks, umap))):
+        path = os.path.join(build.BUILD, 'mapkit_foliage_%d.bin' % k)
+        open(path, 'wb').write(b''.join(struct.pack('<16f', *m) for m in f['instances']))
+        jobs.append(dict({k2: v for k2, v in f.items() if k2 != 'instances'}, file=path, count=len(f['instances'])))
+    return jobs
+
+
 def rebuild(args, paks, umap, level):
     existing = os.path.join(PROJECT, 'Content', level[len('/Game/'):] + '.umap')
     if os.path.exists(existing):
         os.remove(existing)
     print('[1/2] Reading %s' % umap)
     sc = scene.export(paks, umap)
-    sc['landscapes'] = [] if args.gameplay_only else landscape_jobs(paks, umap)
+    sc['landscapes'] = [] if args.gameplay_only or args.no_terrain else landscape_jobs(paks, umap)
+    sc['foliage'] = [] if args.gameplay_only or args.no_foliage else foliage_jobs(paks, umap)
     if args.gameplay_only:
         sc['actors'] = [a for a in sc['actors'] if a['class'] not in GEOMETRY]
     print('  %d actors' % len(sc['actors']))
-    if sc['not_rebuilt'] and not args.gameplay_only:
-        print('  WARNING: this map\'s %s cannot be rebuilt yet, so the copy has no foliage.'
-              % ', '.join(sc['not_rebuilt']))
+    if sc['foliage']:
+        print('  foliage: %d instances of %d meshes' % (sum(f['count'] for f in sc['foliage']), len(sc['foliage'])))
     for land in sc['landscapes']:
         print('  terrain %s: %dx%d, drawn with %s (stands in for %s)' % (
             land['name'], land['max'][0] - land['min'][0] + 1, land['max'][1] - land['min'][1] + 1,
@@ -430,6 +444,21 @@ def set_mode(args):
         reg['modes'][args.map] = mode
     save_registry(reg)
     print('%s now plays as %s (after the next build). Its objectives should suit the mode.' % (args.map, mode))
+
+
+def remove_map(args):
+    reg = registry()
+    if args.map in reg['maps']:
+        m = reg['maps'].pop(args.map)
+        if os.path.exists(custom_level_file(m)):
+            os.remove(custom_level_file(m))
+        print('Removed %s (%s is free again). Build to update the game.' % (args.map, m['slot']))
+    elif args.map in reg['modes']:
+        del reg['modes'][args.map]
+        print('%s plays in its own mode again after the next build.' % args.map)
+    else:
+        sys.exit('No map of yours called %s (see: kit.py list)' % args.map)
+    save_registry(reg)
 
 
 def list_maps(args):
@@ -536,7 +565,7 @@ PAK_NAME = 'SalvageOps_Maps_P.pak'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'build'])
+    ap.add_argument('command', choices=['setup', 'meshes', 'terrain', 'library', 'import', 'new', 'mode', 'list', 'remove', 'build'])
     ap.add_argument('--install', action='store_true', help='build: copy the pak into the game')
     ap.add_argument('--force', action='store_true', help='build: pack even if references are missing')
     ap.add_argument('map', nargs='?', help='map name for import, e.g. CTF_Arches')
@@ -546,13 +575,15 @@ def main():
     ap.add_argument('--title', help='new: the name shown in game')
     ap.add_argument('--as', dest='as_map', help='import: save as this map instead (its place in the game)')
     ap.add_argument('--gameplay-only', action='store_true', help='import: leave out the level geometry')
+    ap.add_argument('--no-terrain', action='store_true', help='import/new: leave out the terrain')
+    ap.add_argument('--no-foliage', action='store_true', help='import/new: leave out the foliage')
     ap.add_argument('--ue', default=build.DEFAULT_UE, help='Unreal Engine 4.26 folder')
     ap.add_argument('--game', help='Lemnis Gate folder (default: found through Steam)')
     args = ap.parse_args()
-    if args.command in ('import', 'new', 'mode') and not args.map:
+    if args.command in ('import', 'new', 'mode', 'remove') and not args.map:
         ap.error('%s needs a map name' % args.command)
     {'setup': setup, 'meshes': import_meshes, 'terrain': make_terrain, 'library': make_library, 'import': import_map, 'new': new_map,
-     'mode': set_mode, 'list': list_maps, 'build': build_maps}[args.command](args)
+     'mode': set_mode, 'list': list_maps, 'remove': remove_map, 'build': build_maps}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -27,6 +27,7 @@ class Blueprint:
         asset = content_path(game_path)
         self.pkg = pkg = mapgeo.Package(pakfile.find(paks, asset), pakfile.find(paks, asset[:-7] + '.uexp'))
         self.cls = next(e for e in pkg.exports if e['class'] == 'BlueprintGeneratedClass')
+        self.default_root_template = None
         r = Reader(pkg.b, self.cls['offset'])
         props = pkg._props(r)
         # UObject trailer (no GUID flag), then UStruct::SuperStruct.
@@ -62,6 +63,10 @@ class Blueprint:
         pkg = self.pkg
         nodes, parent_of = [], {}
         scs = pkg.properties(pkg.exports[scs_ref[1] - 1])
+        default = scs.get('DefaultSceneRootNode')
+        if default and default[1] > 0:
+            tmpl = pkg.properties(pkg.exports[default[1] - 1]).get('ComponentTemplate')
+            self.default_root_template = pkg.exports[tmpl[1] - 1]['name'] if tmpl and tmpl[1] > 0 else None
         all_refs = [x[1] for x in scs.get('AllNodes') or []]
         props = {i: pkg.properties(pkg.exports[i - 1]) for i in all_refs if i > 0}
         for i, p in props.items():
@@ -72,8 +77,11 @@ class Blueprint:
             if not p:
                 continue
             cls = self.ref(p['ComponentClass'][1]) if p.get('ComponentClass') else None
+            tmpl = p.get('ComponentTemplate')
             nodes.append({
                 'name': p.get('InternalVariableName'),
+                # Older Blueprints name templates like StaticMeshComponent_12 rather than <Name>_GEN_VARIABLE.
+                'template_name': pkg.exports[tmpl[1] - 1]['name'] if tmpl and tmpl[1] > 0 else None,
                 'class': cls and cls['name'], 'class_package': cls and cls.get('package'),
                 'parent': parent_of.get(i) or p.get('ParentComponentOrVariableName'),
                 'parent_inherited': i not in parent_of and bool(p.get('ParentComponentOrVariableName')),
@@ -118,6 +126,7 @@ class Blueprint:
 
     def info(self):
         return {'path': self.path, 'class': self.cls['name'], 'parent': self.parent, 'root': self.root,
+                'default_root_template': self.default_root_template,
                 'nodes': self.nodes, 'overrides': self.overrides, 'native_components': self.native_components}
 
 

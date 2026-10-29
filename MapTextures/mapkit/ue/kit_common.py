@@ -6,6 +6,11 @@ import traceback
 
 import unreal
 
+import sys  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scene import ue_text  # noqa: E402
+
+TEXT_STRUCTS = ('Vector', 'Rotator', 'LinearColor', 'Color')
 JOB = json.load(open(os.environ['MAPKIT_JOB']))
 ASSETS = unreal.EditorAssetLibrary
 TOOLS = unreal.AssetToolsHelpers.get_asset_tools()
@@ -80,5 +85,10 @@ def set_prop(obj, name, ptype, value):
         obj.set_editor_property(snake(name), convert(ptype, value))
         return True
     except Exception as e:
+        # Python can't reach some properties (Blueprint variables named with spaces, protected ones): set them from
+        # Unreal's text form instead.
+        if not isinstance(value, (list, dict)) or ptype in TEXT_STRUCTS or (isinstance(value, dict) and 'path' in value):
+            if LIB.set_property_text(obj, name, ue_text(ptype, value)):
+                return True
         log('  skip %s.%s: %s' % (obj.get_name(), name, str(e).splitlines()[0][:120]))
         return False

@@ -48,6 +48,7 @@ map list, not its name.
    - **Change a map's mode:** `python mapkit/kit.py mode CTF_Fork CAP` plays a map (yours or the game's) in another
      mode. Its objectives need to suit the mode: capture points for CAP, flags and gate pods for CTF.
    - **See your maps:** `python mapkit/kit.py list`. They're stored in `_build/MapKit/maps.json`.
+   - **Delete one of your maps:** `python mapkit/kit.py remove SO_Yard`. This frees its slot.
 2. **Edit.**
    - Open `_build/MapKit/LemnisGate.uproject` (double-click, or open it from the launcher).
    - Open your level under `Content/Levels/...` and edit it.
@@ -117,7 +118,8 @@ The kit's terrain materials and textures go into the maps pak, adding about 45 M
 - **Lighting is dynamic.** Lights work as placed, with no lighting build. The prototype arenas are lit the same way.
   The finished maps (CTF_TheNest, DM_Trident, CAP_Chimera and the others in `Levels/CAPMap`, `CTFMap`, `DSTMap`) use
   baked lighting that the kit doesn't carry over yet, so rebuilt copies of them look flatter.
-- **Not rebuilt yet:** foliage. Importing a map that uses it (16 of the game's maps) leaves it out with a warning.
+- **Foliage** is rebuilt as instanced meshes of the game's own plants and rocks (`--no-foliage` / `--no-terrain` leave them out).
+- **If the game crashes once while loading a new map** (in `dxilconv`, Windows' DirectX 12 shader converter), try again. It happened once while compiling a new map's shaders and didn't repeat. Adding `-dx11` to the shortcut avoids it.
 - **Not wired up yet:** capture turrets and the reset-loop button (their interaction events).
 
 ## How it works
