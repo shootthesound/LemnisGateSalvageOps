@@ -21,6 +21,7 @@ private:
 	void Wedge(FVector2D Centre, float Inner, float Outer, float From, float To, const FLinearColor& Color) const;
 	void DrawRadial(const AMapBuilderController* PC);
 	void DrawCrosshair(const AMapBuilderController* PC);
+	void DrawBrowser(const AMapBuilderController* PC);
 
 	float UI = 1.f;  // screen height / 1080
 };

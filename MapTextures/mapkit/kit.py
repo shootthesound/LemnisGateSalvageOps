@@ -663,7 +663,68 @@ def edits_file(level):
     return os.path.join(BUILDER_DIR, level.rsplit('/', 1)[1] + '.edits.json')
 
 
-def write_profile(name):
+PALETTE = os.path.join(build.BUILD, 'mapkit_palette.json')
+
+
+def palette(args):
+    """The parts the builder offers, by category: the game's gameplay objects, lights, and every mesh and placeable
+    Blueprint its maps use, grouped by where they live. Cached; delete the file to rebuild it."""
+    if os.path.exists(PALETTE):
+        return json.load(open(PALETTE))
+    paks = pakfile.game_paks(args.game or build.find_game())
+    cat = json.load(open(os.path.join(build.BUILD, 'mapkit_blueprints.json')))
+    placed = set()
+    for m in game_maps(paks):
+        pkg = mapgeo.Package(pakfile.find(paks, m), pakfile.find(paks, m[:-5] + '.uexp'))
+        for imp in pkg.imports:
+            if imp['class'] == 'BlueprintGeneratedClass' and imp['outer'] < 0:
+                package = pkg.imports[-imp['outer'] - 1]['name']
+                if package in cat and cat[package]:
+                    placed.add('%s.%s' % (package, imp['name']))
+
+    def nice(path):
+        return path.rsplit('/', 1)[1].split('.')[0].replace('_', ' ')
+
+    def group(path):
+        parts = path.split('/')[2:-1]
+        return ' / '.join(parts[:2]) if parts else 'Other'
+
+    def native_base(package):
+        seen = set()
+        while package in cat and cat[package] and package not in seen:
+            seen.add(package)
+            parent = cat[package]['parent']
+            if not parent.get('package', '').startswith('/Game/'):
+                return parent['name']
+            package = parent['package']
+        return None
+
+    # Things a map references but you don't place: game rules, players, libraries.
+    not_parts = {'GameInstance', 'ConvergenceGameInstance', 'GameStateBase', 'GameState', 'ConvergenceGameState',
+                 'GameModeBase', 'GameMode', 'ConvergenceGameMode', 'ConstructGameMode', 'HUD', 'ConvergenceHUD',
+                 'PlayerController', 'Character', 'ConvergenceCharacter', 'Pawn', 'BlueprintFunctionLibrary',
+                 'ActorComponent', 'SceneComponent', 'Object'}
+    placed = {c for c in placed if native_base(c.split('.')[0]) not in not_parts}
+    groups = {}
+    gameplay = []
+    for cls in sorted(placed):
+        part = {'name': nice(cls), 'asset': 'class:' + cls}
+        if cls.startswith('/Game/Gameplay/'):
+            gameplay.append(part)
+        else:
+            groups.setdefault(group(cls), []).append(part)
+    for mesh in used_meshes(paks, cat):
+        groups.setdefault(group(mesh), []).append({'name': nice(mesh), 'asset': 'mesh:%s.%s' % (mesh, mesh.rsplit('/', 1)[1])})
+    out = [{'name': 'Gameplay', 'parts': sorted(gameplay, key=lambda p: p['name'].lower())},
+           {'name': 'Lights', 'parts': [{'name': n, 'asset': 'class:/Script/Engine.' + c} for n, c in
+                                        (('Point light', 'PointLight'), ('Spot light', 'SpotLight'),
+                                         ('Rect light', 'RectLight'))]}]
+    out += [{'name': g, 'parts': sorted(p, key=lambda p: p['name'].lower())} for g, p in sorted(groups.items())]
+    json.dump(out, open(PALETTE, 'w'), indent=1)
+    return out
+
+
+def write_profile(name, args=None):
     """What the builder needs to know about this game: for now, how to build and play a map. (The builder core is
     game-agnostic; parts, gameplay objects and mode rules will come from here too.)"""
     os.makedirs(BUILDER_DIR, exist_ok=True)
@@ -671,7 +732,8 @@ def write_profile(name):
     json.dump({'game': 'Lemnis Gate',
                'build': [sys.executable, os.path.abspath(__file__), 'play', name],
                # Objects the game hides in a match (time-trial checkpoints): the builder can hide them too.
-               'helpers': ['CheckPoint']}, open(path, 'w'), indent=1)
+               'helpers': ['CheckPoint'],
+               'palette': palette(args)}, open(path, 'w'), indent=1)
     return path
 
 
@@ -681,7 +743,7 @@ def builder(args, test_folder=None, camera=None):
     editor, _ = build.engine_tools(args.ue)
     gui = editor.replace('UE4Editor-Cmd.exe', 'UE4Editor.exe')
     cmd = [gui, UPROJECT, '%s?game=/Script/MapBuilder.MapBuilderGameMode' % level, '-game', '-windowed',
-           '-ResX=1600', '-ResY=900', '-nosplash', '-MapBuilderProfile=' + write_profile(args.map or '')]
+           '-ResX=1600', '-ResY=900', '-nosplash', '-MapBuilderProfile=' + write_profile(args.map or '', args)]
     if camera:
         cmd.append('-MapBuilderCamera=' + ','.join('%g' % v for v in camera))
     if test_folder:

@@ -8,6 +8,8 @@
 //   Y: duplicate the selection and grab the copy
 //   D-pad left / right: undo / redo   D-pad up / down: fly speed
 //   Hold LB: Edit menu   Hold RB: Settings menu   Hold Menu: File menu (save, build and play, quit)
+//   View: parts browser. D-pad / left stick: browse   LT / RT: page   LB / RB: category   A: place it   B: close.
+//         The part you're on floats in front of you; placing puts it in your hands, as if grabbed.
 //   Radial menus: hold the button, point the right stick at an option, release. Sub-menus (grid size, rotation step)
 //   stay open: point and press A, or B to back out.
 //
@@ -27,6 +29,19 @@ struct FMapBuilderRadialItem
 {
 	FString Label;
 	TFunction<void()> Action;
+};
+
+// The game's parts (from its profile): categories of { name, asset } where asset is "mesh:<path>" or "class:<path>".
+struct FMapBuilderPart
+{
+	FString Name;
+	FString Asset;
+};
+
+struct FMapBuilderCategory
+{
+	FString Name;
+	TArray<FMapBuilderPart> Parts;
 };
 
 UCLASS()
@@ -58,6 +73,12 @@ public:
 
 	bool Save();
 
+	// Parts browser
+	bool IsBrowsing() const { return bBrowsing; }
+	const TArray<FMapBuilderCategory>& GetPalette() const { return Palette; }
+	int32 GetBrowseCategory() const { return BrowseCategory; }
+	int32 GetBrowseItem() const { return BrowseItem; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
@@ -80,6 +101,16 @@ private:
 	void ReleaseRB();
 	void PressMenu();
 	void ReleaseMenu();
+	void PressView();
+
+	// Parts browser
+	void OpenBrowser();
+	void CloseBrowser();
+	void BrowseBy(int32 Delta);
+	void BrowseCategoryBy(int32 Delta);
+	void UpdateBrowser(float DeltaTime);
+	void UpdatePreview();
+	void PlaceFromBrowser();
 
 	// Radial menus
 	void OpenRadial(const FString& Title, TArray<FMapBuilderRadialItem> Items, bool bSticky = false);
@@ -135,6 +166,7 @@ private:
 	float Grid = 50.f;       // cm, 0 = off
 	float AngleSnap = 15.f;  // degrees, 0 = off
 	bool bHelpersHidden = false;
+	bool bInvertLook = false;
 
 	// Grabbing: the selection follows the crosshair, standing on what's under it.
 	bool bGrabbing = false;
@@ -155,6 +187,14 @@ private:
 
 	FString Status;
 	double StatusTime = 0.0;
+
+	TArray<FMapBuilderCategory> Palette;
+	bool bBrowsing = false;
+	int32 BrowseCategory = 0, BrowseItem = 0;
+	float BrowseRepeat = 0.f;   // left stick scrolling repeat timer
+	bool bTriggerHeld = false;  // paging with LT / RT, once per pull
+	TWeakObjectPtr<AActor> Preview;
+	float PreviewSpin = 0.f;
 
 	TArray<FString> BuildCommand;  // from the game profile
 	FString SelfTestFolder;

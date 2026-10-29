@@ -1,5 +1,7 @@
 #include "MapBuilderEdits.h"
 
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Misc/FileHelper.h"
@@ -97,9 +99,16 @@ TArray<AActor*> UMapBuilderEdits::Duplicate(const TArray<AActor*>& Actors, const
 		}
 		MakeMovable(Copy);
 		Copy->SetActorTransform(T);  // spawning combines the template's own placement with T
-		// A copy of a copy is still a copy of the level actor.
-		const FName* Root = Sources.Find(A);
-		Sources.Add(Copy, Root ? *Root : A->GetFName());
+		// A copy of a copy is still a copy of the level actor; a copy of a new part is another new part.
+		if (const FString* Asset = Assets.Find(A))
+		{
+			Assets.Add(Copy, *Asset);
+		}
+		else
+		{
+			const FName* Root = Sources.Find(A);
+			Sources.Add(Copy, Root ? *Root : A->GetFName());
+		}
 		Step.Actors.Add(Copy);
 		Copies.Add(Copy);
 	}
@@ -111,6 +120,60 @@ TArray<AActor*> UMapBuilderEdits::Duplicate(const TArray<AActor*>& Actors, const
 		bDirty = true;
 	}
 	return Copies;
+}
+
+AActor* UMapBuilderEdits::SpawnAsset(UWorld* World, const FString& Asset, const FTransform& Transform)
+{
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Actor = nullptr;
+	if (Asset.StartsWith(TEXT("mesh:")))
+	{
+		UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Asset.Mid(5));
+		if (!Mesh)
+		{
+			return nullptr;
+		}
+		AStaticMeshActor* M = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Transform, Params);
+		if (M)
+		{
+			M->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+			M->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+		}
+		Actor = M;
+	}
+	else if (Asset.StartsWith(TEXT("class:")))
+	{
+		UClass* Class = LoadClass<AActor>(nullptr, *Asset.Mid(6));
+		Actor = Class ? World->SpawnActor<AActor>(Class, Transform, Params) : nullptr;
+		if (Actor && Actor->GetRootComponent())
+		{
+			Actor->GetRootComponent()->SetMobility(EComponentMobility::Movable);
+		}
+	}
+	if (Actor)
+	{
+		Actor->SetActorTransform(Transform);  // spawning combines the class's own default placement with Transform
+	}
+	return Actor;
+}
+
+AActor* UMapBuilderEdits::AddAsset(UWorld* World, const FString& Asset, const FTransform& Transform)
+{
+	AActor* Actor = SpawnAsset(World, Asset, Transform);
+	if (!Actor)
+	{
+		return nullptr;
+	}
+	Assets.Add(Actor, Asset);
+	FStep Step;
+	Step.Kind = FStep::Add;
+	Step.Actors.Add(Actor);
+	History.SetNum(Position);
+	History.Add(Step);
+	++Position;
+	bDirty = true;
+	return Actor;
 }
 
 void UMapBuilderEdits::Apply(const FStep& Step, bool bForward)
@@ -205,7 +268,18 @@ FString UMapBuilderEdits::ToJson(const FString& Level) const
 			continue;
 		}
 		const FName* Source = Sources.Find(Weak);
-		if (Source)
+		if (const FString* Asset = Assets.Find(Weak))
+		{
+			if (!IsDeleted(A))
+			{
+				TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+				Item->SetStringField(TEXT("name"), A->GetName());
+				Item->SetStringField(TEXT("asset"), *Asset);
+				Item->SetObjectField(TEXT("transform"), TransformJson(A->GetActorTransform()));
+				Added.Add(MakeShared<FJsonValueObject>(Item));
+			}
+		}
+		else if (Source)
 		{
 			if (!IsDeleted(A))
 			{

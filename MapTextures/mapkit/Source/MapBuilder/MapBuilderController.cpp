@@ -55,6 +55,24 @@ void AMapBuilderController::BeginPlay()
 		{
 			Profile->TryGetStringArrayField(TEXT("build"), BuildCommand);
 			Profile->TryGetStringArrayField(TEXT("helpers"), HelperClasses);
+			const TArray<TSharedPtr<FJsonValue>>* Categories = nullptr;
+			if (Profile->TryGetArrayField(TEXT("palette"), Categories))
+			{
+				for (const TSharedPtr<FJsonValue>& C : *Categories)
+				{
+					const TSharedPtr<FJsonObject> CO = C->AsObject();
+					FMapBuilderCategory Cat;
+					Cat.Name = CO->GetStringField(TEXT("name"));
+					for (const TSharedPtr<FJsonValue>& I : CO->GetArrayField(TEXT("parts")))
+					{
+						Cat.Parts.Add({ I->AsObject()->GetStringField(TEXT("name")), I->AsObject()->GetStringField(TEXT("asset")) });
+					}
+					if (Cat.Parts.Num())
+					{
+						Palette.Add(MoveTemp(Cat));
+					}
+				}
+			}
 		}
 	}
 	if (FParse::Value(FCommandLine::Get(), TEXT("MapBuilderTest="), SelfTestFolder, false))
@@ -82,6 +100,7 @@ void AMapBuilderController::SetupInputComponent()
 	In->BindKey(EKeys::Gamepad_RightShoulder, IE_Released, this, &AMapBuilderController::ReleaseRB);
 	In->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this, &AMapBuilderController::PressMenu);
 	In->BindKey(EKeys::Gamepad_Special_Right, IE_Released, this, &AMapBuilderController::ReleaseMenu);
+	In->BindKey(EKeys::Gamepad_Special_Left, IE_Pressed, this, &AMapBuilderController::PressView);
 }
 
 void AMapBuilderController::PlayerTick(float DeltaTime)
@@ -90,7 +109,7 @@ void AMapBuilderController::PlayerTick(float DeltaTime)
 	if (RadialItems.Num())
 	{
 		// The right stick picks an option; flying still works.
-		const FVector2D S(Stick(EKeys::Gamepad_RightX), Stick(EKeys::Gamepad_RightY));
+		const FVector2D S(Stick(EKeys::Gamepad_RightX), -Stick(EKeys::Gamepad_RightY));  // this pad reports up as negative
 		RadialStick = S;
 		if (S.Size() > 0.5f)
 		{
@@ -104,7 +123,14 @@ void AMapBuilderController::PlayerTick(float DeltaTime)
 	{
 		Look(DeltaTime);
 	}
-	Fly(DeltaTime);
+	if (bBrowsing)
+	{
+		UpdateBrowser(DeltaTime);
+	}
+	else
+	{
+		Fly(DeltaTime);
+	}
 	if (bGrabbing)
 	{
 		UpdateGrab();
@@ -124,7 +150,7 @@ float AMapBuilderController::Stick(const FKey& Key) const
 
 void AMapBuilderController::Look(float DeltaTime)
 {
-	const float X = Stick(EKeys::Gamepad_RightX), Y = Stick(EKeys::Gamepad_RightY);
+	const float X = Stick(EKeys::Gamepad_RightX), Y = -Stick(EKeys::Gamepad_RightY) * (bInvertLook ? -1.f : 1.f);
 	// A gentle curve: precise near the centre, fast at the edge.
 	FRotator R = GetControlRotation();
 	R.Yaw += X * FMath::Abs(X) * LookSpeed * DeltaTime;
@@ -269,6 +295,11 @@ void AMapBuilderController::ClearSelection()
 
 void AMapBuilderController::PressA()
 {
+	if (bBrowsing)
+	{
+		PlaceFromBrowser();
+		return;
+	}
 	if (RadialItems.Num())
 	{
 		if (bRadialSticky)
@@ -289,6 +320,11 @@ void AMapBuilderController::PressA()
 
 void AMapBuilderController::PressB()
 {
+	if (bBrowsing)
+	{
+		CloseBrowser();
+		return;
+	}
 	if (RadialItems.Num())
 	{
 		CloseRadial(false);
@@ -305,6 +341,10 @@ void AMapBuilderController::PressB()
 
 void AMapBuilderController::PressX()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (RadialItems.Num())
 	{
 		return;
@@ -325,6 +365,10 @@ void AMapBuilderController::PressX()
 
 void AMapBuilderController::PressY()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (!RadialItems.Num() && !bGrabbing)
 	{
 		Duplicate();
@@ -333,6 +377,10 @@ void AMapBuilderController::PressY()
 
 void AMapBuilderController::PressRightStick()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (bGrabbing)
 	{
 		GrabAxis = (GrabAxis + 1) % 3;
@@ -363,6 +411,10 @@ void AMapBuilderController::Rotate(float Sign)
 
 void AMapBuilderController::PressDPadLeft()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (bGrabbing)
 	{
 		GrabScale = FMath::Max(0.05f, GrabScale / 1.1f);
@@ -375,6 +427,10 @@ void AMapBuilderController::PressDPadLeft()
 
 void AMapBuilderController::PressDPadRight()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (bGrabbing)
 	{
 		GrabScale *= 1.1f;
@@ -387,6 +443,11 @@ void AMapBuilderController::PressDPadRight()
 
 void AMapBuilderController::PressDPadUp()
 {
+	if (bBrowsing)
+	{
+		BrowseBy(-1);
+		return;
+	}
 	if (bGrabbing)
 	{
 		GrabLift += Grid > 0.f ? Grid : 25.f;
@@ -399,6 +460,11 @@ void AMapBuilderController::PressDPadUp()
 
 void AMapBuilderController::PressDPadDown()
 {
+	if (bBrowsing)
+	{
+		BrowseBy(1);
+		return;
+	}
 	if (bGrabbing)
 	{
 		GrabLift -= Grid > 0.f ? Grid : 25.f;
@@ -411,6 +477,11 @@ void AMapBuilderController::PressDPadDown()
 
 void AMapBuilderController::PressLB()
 {
+	if (bBrowsing)
+	{
+		BrowseCategoryBy(-1);
+		return;
+	}
 	if (bGrabbing)
 	{
 		Rotate(-1.f);
@@ -431,6 +502,11 @@ void AMapBuilderController::ReleaseLB()
 
 void AMapBuilderController::PressRB()
 {
+	if (bBrowsing)
+	{
+		BrowseCategoryBy(1);
+		return;
+	}
 	if (bGrabbing)
 	{
 		Rotate(1.f);
@@ -451,6 +527,10 @@ void AMapBuilderController::ReleaseRB()
 
 void AMapBuilderController::PressMenu()
 {
+	if (bBrowsing)
+	{
+		return;
+	}
 	if (!RadialItems.Num() && !bGrabbing)
 	{
 		FileMenu();
@@ -463,6 +543,141 @@ void AMapBuilderController::ReleaseMenu()
 	{
 		CloseRadial(true);
 	}
+}
+
+void AMapBuilderController::PressView()
+{
+	if (bBrowsing)
+	{
+		CloseBrowser();
+	}
+	else if (!bGrabbing && !RadialItems.Num())
+	{
+		OpenBrowser();
+	}
+}
+
+// ---------------------------------------------------------------- parts browser
+
+void AMapBuilderController::OpenBrowser()
+{
+	if (!Palette.Num())
+	{
+		SetStatus(TEXT("This game's profile has no parts"));
+		return;
+	}
+	bBrowsing = true;
+	BrowseCategory = FMath::Clamp(BrowseCategory, 0, Palette.Num() - 1);
+	BrowseItem = FMath::Clamp(BrowseItem, 0, Palette[BrowseCategory].Parts.Num() - 1);
+	UpdatePreview();
+}
+
+void AMapBuilderController::CloseBrowser()
+{
+	bBrowsing = false;
+	if (Preview.IsValid())
+	{
+		Preview->Destroy();
+	}
+	Preview.Reset();
+}
+
+void AMapBuilderController::BrowseBy(int32 Delta)
+{
+	const int32 N = Palette[BrowseCategory].Parts.Num();
+	BrowseItem = FMath::Clamp(BrowseItem + Delta, 0, N - 1);
+	UpdatePreview();
+}
+
+void AMapBuilderController::BrowseCategoryBy(int32 Delta)
+{
+	const int32 N = Palette.Num();
+	BrowseCategory = ((BrowseCategory + Delta) % N + N) % N;
+	BrowseItem = 0;
+	UpdatePreview();
+}
+
+void AMapBuilderController::UpdateBrowser(float DeltaTime)
+{
+	// Left stick scrolls, faster the further it's pushed; the triggers page.
+	const float Y = Stick(EKeys::Gamepad_LeftY);
+	BrowseRepeat -= DeltaTime;
+	if (Y != 0.f && BrowseRepeat <= 0.f)
+	{
+		BrowseBy(Y > 0.f ? -1 : 1);  // stick up: up the list
+		BrowseRepeat = FMath::Lerp(0.3f, 0.04f, FMath::Abs(Y));
+	}
+	else if (Y == 0.f)
+	{
+		BrowseRepeat = 0.f;
+	}
+	const float LT = GetInputAnalogKeyState(EKeys::Gamepad_LeftTriggerAxis), RT = GetInputAnalogKeyState(EKeys::Gamepad_RightTriggerAxis);
+	if (!bTriggerHeld && (LT > 0.6f || RT > 0.6f))
+	{
+		BrowseBy(RT > 0.6f ? 10 : -10);
+		bTriggerHeld = true;
+	}
+	else if (LT < 0.2f && RT < 0.2f)
+	{
+		bTriggerHeld = false;
+	}
+	// The part floats in front of you, turning slowly about its own middle.
+	if (AActor* P = Preview.Get())
+	{
+		FVector Origin;
+		const FVector Dir = Aim(&Origin);
+		PreviewSpin += DeltaTime * 30.f;
+		const FRotator Turn(0.f, PreviewSpin, 0.f);
+		P->SetActorRotation(Turn);
+		const FBox Box = P->GetComponentsBoundingBox(true);
+		P->SetActorLocation(P->GetActorLocation() + (Origin + Dir * 600.f - Box.GetCenter()));
+	}
+}
+
+void AMapBuilderController::UpdatePreview()
+{
+	if (Preview.IsValid())
+	{
+		Preview->Destroy();
+	}
+	Preview.Reset();
+	const FMapBuilderPart& Part = Palette[BrowseCategory].Parts[BrowseItem];
+	FVector Origin;
+	const FVector Dir = Aim(&Origin);
+	AActor* P = UMapBuilderEdits::SpawnAsset(GetWorld(), Part.Asset, FTransform(Origin + Dir * 600.f));
+	if (!P)
+	{
+		SetStatus(TEXT("Can't show ") + Part.Name);
+		return;
+	}
+	P->SetActorEnableCollision(false);
+	// Big things shrink to fit the view; small things grow a little.
+	const float Size = P->GetComponentsBoundingBox(true).GetExtent().GetMax();
+	if (Size > 1.f)
+	{
+		P->SetActorScale3D(FVector(FMath::Clamp(180.f / Size, 0.05f, 4.f)));
+	}
+	Preview = P;
+}
+
+void AMapBuilderController::PlaceFromBrowser()
+{
+	const FMapBuilderPart Part = Palette[BrowseCategory].Parts[BrowseItem];
+	CloseBrowser();
+	FVector Origin;
+	const FVector Dir = Aim(&Origin);
+	FHitResult Hit;
+	const FVector At = Trace({}, &Hit) ? FVector(Hit.ImpactPoint) : Origin + Dir * 1000.f;
+	AActor* Actor = Edits->AddAsset(GetWorld(), Part.Asset, FTransform(At));
+	if (!Actor)
+	{
+		SetStatus(TEXT("Couldn't place ") + Part.Name);
+		return;
+	}
+	Selection.Reset();
+	Selection.Add(Actor);
+	Grab();  // in your hands: put it down with A or X
+	SetStatus(TEXT("Placing ") + Part.Name);
 }
 
 // ---------------------------------------------------------------- radial menus
@@ -513,6 +728,7 @@ void AMapBuilderController::SettingsMenu()
 		{ TEXT("Rotation step..."), [this] { RotationStepMenu(); } },
 		{ TEXT("Faster flying"), [this] { ChangeSpeed(1.5f); } },
 		{ bHelpersHidden ? TEXT("Show helpers") : TEXT("Hide helpers"), [this] { ToggleHelpers(); } },
+		{ bInvertLook ? TEXT("Normal look") : TEXT("Invert look"), [this] { bInvertLook = !bInvertLook; SetStatus(bInvertLook ? TEXT("Look inverted") : TEXT("Look normal")); } },
 		{ TEXT("Slower flying"), [this] { ChangeSpeed(1.f / 1.5f); } },
 	});
 }
@@ -828,9 +1044,20 @@ void AMapBuilderController::SelfTestEdit()
 	UpdateGrab();
 	PressX();
 	Edits->Save(FPaths::Combine(SelfTestFolder, TEXT("builder.edits.json")), GetLevelPath());
-	// Then open the Edit menu with the stick pointing at Duplicate, for the screenshot.
-	PressLB();
-	RadialChoice = 0;
+	// Then open the parts browser on the jump pad, for the screenshot.
+	OpenBrowser();
+	for (int32 c = 0; c < Palette.Num(); ++c)
+	{
+		for (int32 i = 0; i < Palette[c].Parts.Num(); ++i)
+		{
+			if (Palette[c].Parts[i].Name == TEXT("JumpPad"))
+			{
+				BrowseCategory = c;
+				BrowseItem = i;
+				UpdatePreview();
+			}
+		}
+	}
 	GetWorldTimerManager().SetTimer(SelfTestTimer, this, &AMapBuilderController::SelfTestShot, 1.f, false);
 }
 
@@ -842,6 +1069,14 @@ void AMapBuilderController::SelfTestShot()
 
 void AMapBuilderController::SelfTestReport()
 {
+	// Place the part being browsed where the crosshair points, and save again.
+	if (bBrowsing)
+	{
+		PlaceFromBrowser();
+		UpdateGrab();
+		Place();
+		Edits->Save(FPaths::Combine(SelfTestFolder, TEXT("builder.edits.json")), GetLevelPath());
+	}
 	TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> Selected;
 	for (AActor* A : GetSelectedActors())

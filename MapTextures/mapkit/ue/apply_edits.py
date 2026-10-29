@@ -19,6 +19,22 @@ def transform(t):
                             unreal.Vector(*scale))
 
 
+def new_part(world, asset, t):
+    """A part from the builder's palette: "mesh:<path>" or "class:<path>"."""
+    kind, path = asset.split(':', 1)
+    if kind == 'mesh':
+        mesh = unreal.load_object(None, path)
+        actor = LIB.spawn_actor(world, unreal.StaticMeshActor, t, '') if mesh else None
+        if actor:
+            actor.static_mesh_component.set_static_mesh(mesh)
+    else:
+        cls = unreal.load_object(None, path) if path.startswith('/Game/') else unreal.load_class(None, path)
+        actor = LIB.spawn_actor(world, cls, t, '') if cls else None
+    if actor:
+        actor.set_actor_transform(t, False, False)  # spawning combines the class's default placement with t
+    return actor
+
+
 def main():
     edits = json.load(open(JOB['edits']))
     world = LIB.load_level(edits['level'])
@@ -35,6 +51,12 @@ def main():
             missing.append(name)
     added = 0
     for item in edits.get('added', []):
+        if 'asset' in item:
+            if new_part(world, item['asset'], transform(item['transform'])):
+                added += 1
+            else:
+                missing.append(item['asset'])
+            continue
         source = LIB.find_actor(world, item['source'])
         if source and LIB.duplicate_actor(source, transform(item['transform'])):
             added += 1

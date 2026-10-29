@@ -77,11 +77,11 @@ void AMapBuilderHUD::DrawHUD()
 	// Selection list (left).
 	const TArray<AActor*> Sel = PC->GetSelectedActors();
 	float Y = 72.f * UI;
-	for (int32 i = 0; i < Sel.Num() && i < 5; ++i, Y += 30.f * UI)
+	for (int32 i = 0; i < Sel.Num() && i < 5 && !PC->IsBrowsing(); ++i, Y += 30.f * UI)
 	{
 		Text(Sel[i]->GetName(), Margin, Y, Accent, 20.f);
 	}
-	if (Sel.Num() > 5)
+	if (Sel.Num() > 5 && !PC->IsBrowsing())
 	{
 		Text(FString::Printf(TEXT("+ %d more"), Sel.Num() - 5), Margin, Y, Accent, 20.f);
 	}
@@ -98,6 +98,10 @@ void AMapBuilderHUD::DrawHUD()
 	{
 		Hint = TEXT("");
 	}
+	else if (PC->IsBrowsing())
+	{
+		Hint = TEXT("A  place     B  close     D-pad / left stick  browse     LT / RT  page     LB / RB  category     Right stick  look");
+	}
 	else if (PC->IsGrabbing())
 	{
 		Hint = FString::Printf(TEXT("A  place     B  put back     LB / RB  rotate (%s)     R3  turn / tilt / roll     D-pad  height / size"),
@@ -105,7 +109,7 @@ void AMapBuilderHUD::DrawHUD()
 	}
 	else
 	{
-		Hint = TEXT("A  select     X  grab     Y  duplicate     B  clear     R3  add     D-pad  undo / redo / speed     LB  edit     RB  settings     Menu  file");
+		Hint = TEXT("A  select     X  grab     Y  duplicate     B  clear     R3  add     D-pad  undo / redo / speed     LB  edit     RB  settings     View  parts     Menu  file");
 	}
 	if (!Hint.IsEmpty())
 	{
@@ -117,9 +121,45 @@ void AMapBuilderHUD::DrawHUD()
 	{
 		DrawRadial(PC);
 	}
+	else if (PC->IsBrowsing())
+	{
+		DrawBrowser(PC);
+	}
 	else
 	{
 		DrawCrosshair(PC);
+	}
+}
+
+void AMapBuilderHUD::DrawBrowser(const AMapBuilderController* PC)
+{
+	const TArray<FMapBuilderCategory>& Palette = PC->GetPalette();
+	const FMapBuilderCategory& Cat = Palette[PC->GetBrowseCategory()];
+	const int32 Item = PC->GetBrowseItem();
+	const float X = 0.f, Top = 60.f * UI, W = 620.f * UI, H = Canvas->ClipY - Top - 56.f * UI;
+	const float Pad = 28.f * UI, Row = 40.f * UI;
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.82f), X, Top, W, H);
+
+	// Category, with the bumpers either side.
+	Text(TEXT("LB"), X + Pad, Top + 22.f * UI, Dim, 20.f);
+	Text(TEXT("RB"), X + W - Pad - 34.f * UI, Top + 22.f * UI, Dim, 20.f);
+	Text(Cat.Name, X + W * 0.5f, Top + 34.f * UI, Accent, 28.f, true);
+	Text(FString::Printf(TEXT("category %d of %d     part %d of %d"), PC->GetBrowseCategory() + 1, Palette.Num(), Item + 1, Cat.Parts.Num()),
+		X + W * 0.5f, Top + 72.f * UI, Dim, 18.f, true);
+
+	// The list, scrolled to keep the current part in the middle.
+	const float ListTop = Top + 104.f * UI;
+	const int32 Rows = FMath::Max(1, FMath::FloorToInt((H - 120.f * UI) / Row));
+	const int32 First = FMath::Clamp(Item - Rows / 2, 0, FMath::Max(0, Cat.Parts.Num() - Rows));
+	for (int32 r = 0; r < Rows && First + r < Cat.Parts.Num(); ++r)
+	{
+		const int32 i = First + r;
+		const float Y = ListTop + r * Row;
+		if (i == Item)
+		{
+			DrawRect(FLinearColor(1.f, 0.62f, 0.1f, 0.95f), X + 12.f * UI, Y, W - 24.f * UI, Row - 4.f * UI);
+		}
+		Text(Cat.Parts[i].Name, X + Pad, Y + 6.f * UI, i == Item ? FLinearColor(0.08f, 0.05f, 0.f) : White, 22.f);
 	}
 }
 

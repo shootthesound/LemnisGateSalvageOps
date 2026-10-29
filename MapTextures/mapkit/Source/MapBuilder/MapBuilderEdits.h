@@ -21,6 +21,11 @@ public:
 	void Delete(const TArray<AActor*>& Actors);
 	TArray<AActor*> Duplicate(const TArray<AActor*>& Actors, const FVector& Offset);
 
+	// A new part from the game's palette: "mesh:<path>" (a static mesh) or "class:<path>" (an actor class).
+	// One undo step. Saved as { name, asset, transform } under "added".
+	AActor* AddAsset(UWorld* World, const FString& Asset, const FTransform& Transform);
+	static AActor* SpawnAsset(UWorld* World, const FString& Asset, const FTransform& Transform);
+
 	bool Undo();
 	bool Redo();
 	int32 Count() const { return History.Num(); }
@@ -48,4 +53,6 @@ private:
 
 	// Copies made in the builder: copy -> the level actor it was copied from.
 	TMap<TWeakObjectPtr<AActor>, FName> Sources;
+	// New parts: actor -> its palette asset. Copies of new parts copy the asset.
+	TMap<TWeakObjectPtr<AActor>, FString> Assets;
 };
